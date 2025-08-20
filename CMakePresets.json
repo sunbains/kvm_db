@@ -1,0 +1,115 @@
+{
+    "version": 6,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 25,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "base",
+            "hidden": true,
+            "cacheVariables": {
+                "CMAKE_CXX_STANDARD": "23",
+                "CMAKE_CXX_STANDARD_REQUIRED": "ON",
+                "CMAKE_CXX_EXTENSIONS": "OFF",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+            },
+            "warnings": {
+                "dev": true,
+                "deprecated": true
+            }
+        },
+        {
+            "name": "dev",
+            "inherits": "base",
+            "displayName": "Development Build",
+            "description": "Debug build with sanitizers and extra warnings",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "ENABLE_TESTING": "ON"
+            }
+        },
+        {
+            "name": "release",
+            "inherits": "base", 
+            "displayName": "Release Build",
+            "description": "Optimized release build",
+            "binaryDir": "${sourceDir}/build-release",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "gcc-dev",
+            "inherits": "dev",
+            "displayName": "GCC Development",
+            "description": "Development build with GCC",
+            "binaryDir": "${sourceDir}/build-gcc",
+            "cacheVariables": {
+                "CMAKE_CXX_COMPILER": "g++",
+                "CMAKE_C_COMPILER": "gcc"
+            }
+        },
+        {
+            "name": "clang-dev", 
+            "inherits": "dev",
+            "displayName": "Clang Development",
+            "description": "Development build with Clang",
+            "binaryDir": "${sourceDir}/build-clang",
+            "cacheVariables": {
+                "CMAKE_CXX_COMPILER": "clang++",
+                "CMAKE_C_COMPILER": "clang"
+            }
+        },
+        {
+            "name": "coverage",
+            "inherits": "dev",
+            "displayName": "Coverage Build",
+            "description": "Build with coverage instrumentation",
+            "binaryDir": "${sourceDir}/build-coverage",
+            "cacheVariables": {
+                "CMAKE_CXX_FLAGS": "--coverage",
+                "CMAKE_C_FLAGS": "--coverage",
+                "CMAKE_EXE_LINKER_FLAGS": "--coverage"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "dev",
+            "configurePreset": "dev",
+            "displayName": "Development Build",
+            "description": "Build the development configuration"
+        },
+        {
+            "name": "release",
+            "configurePreset": "release",
+            "displayName": "Release Build", 
+            "description": "Build the release configuration"
+        },
+        {
+            "name": "gcc-dev",
+            "configurePreset": "gcc-dev",
+            "displayName": "GCC Development Build"
+        },
+        {
+            "name": "clang-dev", 
+            "configurePreset": "clang-dev",
+            "displayName": "Clang Development Build"
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "dev",
+            "configurePreset": "dev",
+            "displayName": "Development Tests",
+            "description": "Run tests on development build",
+            "output": {
+                "outputOnFailure": true
+            }
+        }
+    ]
+}
+

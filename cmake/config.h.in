@@ -1,0 +1,139 @@
+// cmake/config.h.in - Generated configuration header
+#pragma once
+
+// Project information
+#define KVM_PROBE_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
+#define KVM_PROBE_VERSION_MINOR @PROJECT_VERSION_MINOR@
+#define KVM_PROBE_VERSION_PATCH @PROJECT_VERSION_PATCH@
+#define KVM_PROBE_VERSION "@PROJECT_VERSION@"
+#define KVM_PROBE_NAME "@PROJECT_NAME@"
+
+// System capabilities - using @VAR@ syntax for CMake substitution
+#cmakedefine01 HAVE_LINUX_KVM_H
+#cmakedefine01 HAVE_SYS_IOCTL_H
+#cmakedefine01 HAVE_FCNTL_H
+#cmakedefine01 HAVE_UNISTD_H
+#cmakedefine01 HAVE_KVM_IOCTLS
+
+// Compile-time header validation
+#if !HAVE_LINUX_KVM_H
+    #error "linux/kvm.h is required but was not found during configuration"
+#endif
+
+#if !HAVE_SYS_IOCTL_H
+    #error "sys/ioctl.h is required but was not found during configuration"
+#endif
+
+// C++23 feature availability
+#cmakedefine01 HAVE_STD_PRINT
+#cmakedefine01 HAVE_STD_FORMAT
+#cmakedefine01 HAVE_STD_EXPECTED
+#cmakedefine01 COMPILER_SUPPORTS_STD_PRINT
+
+// Platform detection
+#ifdef __linux__
+    #define PLATFORM_LINUX 1
+#else
+    #define PLATFORM_LINUX 0
+#endif
+
+// Print function selection macro with better feature detection
+#if defined(__cpp_lib_print) && __cpp_lib_print >= 202207L && HAVE_STD_PRINT
+    #define USE_STD_PRINT 1
+    #include <print>
+    namespace kvm_db {
+        using std::print;
+        using std::println;
+    }
+#elif HAVE_STD_FORMAT
+    #define USE_STD_PRINT 0
+    #include <format>
+    #include <iostream>
+    namespace kvm_db {
+        template<typename... Args>
+        void println(const std::format_string<Args...> fmt, Args&&... args) {
+            std::cout << std::format(fmt, std::forward<Args>(args)...) << '\\n';
+        }
+        template<typename... Args>
+        void print(const std::format_string<Args...> fmt, Args&&... args) {
+            std::cout << std::format(fmt, std::forward<Args>(args)...);
+        }
+        // Overloads for simple string cases
+        inline void println(const std::string_view msg) { std::cout << msg << '\\n'; }
+        inline void print(const std::string_view msg) { std::cout << msg; }
+    }
+#else
+    #define USE_STD_PRINT 0
+    #include <iostream>
+    #include <iomanip>
+    namespace kvm_db {
+        // Basic fallback - template for compatibility but just print format string
+        template<typename... Args>
+        void println(const std::string& fmt, Args&&...) { std::cout << fmt << '\\n'; }
+        template<typename... Args>
+        void print(const std::string& fmt, Args&&...) { std::cout << fmt; }
+        // Simple string overloads
+        inline void println(const std::string_view msg) { std::cout << msg << '\\n'; }
+        inline void print(const std::string_view msg) { std::cout << msg; }
+    }
+#endif
+
+// Expected type handling
+#if HAVE_STD_EXPECTED
+    #include <expected>
+    namespace kvm_db {
+        template<typename T, typename E>
+        using expected = std::expected<T, E>;
+        using std::unexpected;
+    }
+#else
+    // Simple expected-like implementation for this specific use case
+    #include <variant>
+    #include <stdexcept>
+    
+    namespace kvm_db {
+        template<typename T, typename E>
+        class expected {
+            std::variant<T, E> data_;
+            
+        public:
+            expected(T&& val) : data_(std::forward<T>(val)) {}
+            expected(const T& val) : data_(val) {}
+            
+            template<typename U>
+            expected(unexpected<U>&& err) : data_(std::forward<U>(err.error)) {}
+            
+            bool has_value() const noexcept { return std::holds_alternative<T>(data_); }
+            explicit operator bool() const noexcept { return has_value(); }
+            
+            T& value() & { 
+                if (!has_value()) throw std::runtime_error("expected has no value");
+                return std::get<T>(data_); 
+            }
+            const T& value() const & { 
+                if (!has_value()) throw std::runtime_error("expected has no value");
+                return std::get<T>(data_); 
+            }
+            T&& value() && { 
+                if (!has_value()) throw std::runtime_error("expected has no value");
+                return std::move(std::get<T>(data_)); 
+            }
+            
+            E& error() & { return std::get<E>(data_); }
+            const E& error() const & { return std::get<E>(data_); }
+            E&& error() && { return std::move(std::get<E>(data_)); }
+            
+            T& operator*() & { return value(); }
+            const T& operator*() const & { return value(); }
+            T&& operator*() && { return std::move(value()); }
+        };
+        
+        template<typename E>
+        struct unexpected {
+            E error;
+            explicit unexpected(E&& e) : error(std::forward<E>(e)) {}
+            explicit unexpected(const E& e) : error(e) {}
+        };
+    }
+#endif
+
