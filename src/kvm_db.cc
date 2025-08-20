@@ -1,93 +1,265 @@
 #include <fcntl.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/sysmacros.h>  // For makedev, major, minor
 #include <unistd.h>
-#include <cassert>
 #include <linux/kvm.h>
-#include <print>
-#include <format>
 #include <memory>
 #include <vector>
 #include <string_view>
-#include <expected>
-#include <utility>
 #include <system_error>
+#include <filesystem>
+#include <cstring>  // For strerror, strcmp
+#include <utility>
 
-struct KVMProbe {
-    KVMProbe() = default;
+#include "kvm_db/config.h"
 
-    ~KVMProbe() { 
-        if (m_kvm_fd >= 0) {
-          close(m_kvm_fd); 
-	}
+using namespace kvm_db;
+
+struct WALDeviceManager {
+    WALDeviceManager() = default;
+    ~WALDeviceManager() { 
+        cleanup_devices(); 
     }
-    
-    // Non-copyable, movable
-    KVMProbe(const KVMProbe&) = delete;
-    KVMProbe& operator=(const KVMProbe&) = delete;
-    KVMProbe(KVMProbe&& other) noexcept : m_kvm_fd(std::exchange(other.m_kvm_fd, -1)) {}
 
-    KVMProbe& operator=(KVMProbe&& other) noexcept {
+    // Non-copyable, movable
+    WALDeviceManager(const WALDeviceManager&) = delete;
+    WALDeviceManager& operator=(const WALDeviceManager&) = delete;
+    WALDeviceManager(WALDeviceManager&& other) noexcept 
+        : char_device_created_(std::exchange(other.char_device_created_, false))
+        , block_device_created_(std::exchange(other.block_device_created_, false)) {}
+    WALDeviceManager& operator=(WALDeviceManager&& other) noexcept {
         if (this != &other) {
-            if (m_kvm_fd >= 0) {
-              close(m_kvm_fd);
-	    }
-            m_kvm_fd = std::exchange(other.m_kvm_fd, -1);
+            cleanup_devices();
+            char_device_created_ = std::exchange(other.char_device_created_, false);
+            block_device_created_ = std::exchange(other.block_device_created_, false);
         }
         return *this;
     }
-    
-    [[nodiscard]] std::expected<void, std::error_code> initialize() {
-        assert(m_kvm_fd == -1);
-        m_kvm_fd = open("/dev/kvm", O_RDWR | O_CLOEXEC);
-        if (m_kvm_fd < 0) {
-            return std::unexpected(std::error_code{errno, std::system_category()});
+
+    [[nodiscard]] expected<void, std::error_code> create_devices() {
+        // Create character device (/dev/rwal)
+        if (auto result = create_single_device(CHAR_DEVICE_PATH, S_IFCHR, CHAR_DEVICE_MINOR); !result) {
+            return result;
+        }
+        char_device_created_ = true;
+
+        // Create block device (/dev/wal)
+        if (auto result = create_single_device(BLOCK_DEVICE_PATH, S_IFBLK, BLOCK_DEVICE_MINOR); !result) {
+            // Cleanup char device if block device creation fails
+            cleanup_single_device(CHAR_DEVICE_PATH, char_device_created_);
+            return result;
+        }
+        block_device_created_ = true;
+
+        println("Successfully created WAL devices:");
+        println("  Character device: {} (major={}, minor={})", CHAR_DEVICE_PATH, DEVICE_MAJOR, CHAR_DEVICE_MINOR);
+        println("  Block device:     {} (major={}, minor={})", BLOCK_DEVICE_PATH, DEVICE_MAJOR, BLOCK_DEVICE_MINOR);
+
+        return {};
+    }
+
+    void cleanup_devices() {
+        cleanup_single_device(CHAR_DEVICE_PATH, char_device_created_);
+        cleanup_single_device(BLOCK_DEVICE_PATH, block_device_created_);
+    }
+
+    [[nodiscard]] bool are_devices_accessible() const {
+        return is_device_accessible(CHAR_DEVICE_PATH) && is_device_accessible(BLOCK_DEVICE_PATH);
+    }
+
+    [[nodiscard]] expected<void, std::error_code> test_devices() const {
+        if (!char_device_created_ || !block_device_created_) {
+            return unexpected(std::error_code{ENOENT, std::system_category()});
+        }
+
+        // Test character device
+        if (auto result = test_single_device(CHAR_DEVICE_PATH, "Character"); !result) {
+            return result;
+        }
+
+        // Test block device
+        if (auto result = test_single_device(BLOCK_DEVICE_PATH, "Block"); !result) {
+            return result;
+        }
+
+        return {};
+    }
+
+    [[nodiscard]] const char* char_device_path() const noexcept {
+        return CHAR_DEVICE_PATH;
+    }
+
+    [[nodiscard]] const char* block_device_path() const noexcept {
+        return BLOCK_DEVICE_PATH;
+    }
+
+    [[nodiscard]] bool devices_created() const noexcept {
+        return char_device_created_ && block_device_created_;
+    }
+
+private:
+    [[nodiscard]] expected<void, std::error_code> create_single_device(const char* device_path, mode_t device_type, dev_t minor_dev) {
+        // Check if device already exists
+        if (std::filesystem::exists(device_path)) {
+            println("Warning: {} already exists, removing it first", device_path);
+            if (std::filesystem::remove(device_path)) {
+                println("Removed existing {}", device_path);
+            } else {
+                return unexpected(std::error_code{errno, std::system_category()});
+            }
+        }
+
+        // Create the device node
+        dev_t device_id = makedev(DEVICE_MAJOR, minor(minor_dev));
+
+        // Create device node with appropriate permissions (rw-rw-rw-)
+        if (mknod(device_path, device_type | 0666, device_id) != 0) {
+            return unexpected(std::error_code{errno, std::system_category()});
+        }
+
+        return {};
+    }
+
+    [[nodiscard]] bool is_device_accessible(const char* device_path) const {
+        if (!std::filesystem::exists(device_path)) {
+            return false;
+        }
+
+        // Try to open the device for reading to test accessibility
+        int fd = open(device_path, O_RDONLY | O_NONBLOCK);
+        if (fd >= 0) {
+            close(fd);
+            return true;
+        }
+
+        return false;
+    }
+
+    [[nodiscard]] expected<void, std::error_code> test_single_device(const char* device_path, const char* device_type_name) const {
+        struct stat device_stat;
+        if (stat(device_path, &device_stat) != 0) {
+            return unexpected(std::error_code{errno, std::system_category()});
+        }
+
+        bool is_expected_type = false;
+        if (strcmp(device_type_name, "Character") == 0) {
+            is_expected_type = S_ISCHR(device_stat.st_mode);
+        } else if (strcmp(device_type_name, "Block") == 0) {
+            is_expected_type = S_ISBLK(device_stat.st_mode);
+        }
+
+        if (!is_expected_type) {
+            return unexpected(std::error_code{ENOTTY, std::system_category()});
+        }
+
+        dev_t device_id = device_stat.st_rdev;
+        unsigned int major_num = major(device_id);
+        unsigned int minor_num = minor(device_id);
+
+        println("Device {} verified:", device_path);
+        println("  Type: {} device", device_type_name);
+        println("  Major: {}, Minor: {}", major_num, minor_num);
+        println("  Permissions: {:o}", device_stat.st_mode & 0777);
+
+        if (major_num != DEVICE_MAJOR) {
+            println("Warning: Major number {} doesn't match expected {}", major_num, DEVICE_MAJOR);
+        }
+
+        return {};
+    }
+
+    void cleanup_single_device(const char* device_path, bool& created_flag) {
+        if (created_flag && std::filesystem::exists(device_path)) {
+            if (unlink(device_path) == 0) {
+                println("Successfully removed device: {}", device_path);
+            } else {
+                println("Failed to remove device {}: {}", device_path, strerror(errno));
+            }
+            created_flag = false;
+        }
+    }
+
+public:
+    static constexpr const char* CHAR_DEVICE_PATH = "/dev/rwal";
+    static constexpr const char* BLOCK_DEVICE_PATH = "/dev/wal";
+    static constexpr dev_t DEVICE_MAJOR = 240;  // Use a high number to avoid conflicts
+    static constexpr dev_t CHAR_DEVICE_MINOR = 0;
+    static constexpr dev_t BLOCK_DEVICE_MINOR = 1;
+    bool char_device_created_{false};
+    bool block_device_created_{false};
+};
+
+struct KVMProbe {
+    KVMProbe() = default;
+    ~KVMProbe() { 
+        if (kvm_fd >= 0) close(kvm_fd); 
+    }
+
+    // Non-copyable, movable
+    KVMProbe(const KVMProbe&) = delete;
+    KVMProbe& operator=(const KVMProbe&) = delete;
+    KVMProbe(KVMProbe&& other) noexcept : kvm_fd(std::exchange(other.kvm_fd, -1)) {}
+    KVMProbe& operator=(KVMProbe&& other) noexcept {
+        if (this != &other) {
+            if (kvm_fd >= 0) close(kvm_fd);
+            kvm_fd = std::exchange(other.kvm_fd, -1);
+        }
+        return *this;
+    }
+
+    [[nodiscard]] expected<void, std::error_code> initialize() {
+        kvm_fd = open("/dev/kvm", O_RDWR | O_CLOEXEC);
+        if (kvm_fd < 0) {
+            return unexpected(std::error_code{errno, std::system_category()});
         }
         return {};
     }
-    
-    [[nodiscard]] std::expected<int, std::error_code> get_api_version() const {
-        int version = ioctl(m_kvm_fd, KVM_GET_API_VERSION, 0);
+
+    [[nodiscard]] expected<int, std::error_code> get_api_version() const {
+        int version = ioctl(kvm_fd, KVM_GET_API_VERSION, 0);
         if (version < 0) {
-            return std::unexpected(std::error_code{errno, std::system_category()});
+            return unexpected(std::error_code{errno, std::system_category()});
         }
         return version;
     }
-    
+
     [[nodiscard]] bool check_extension(int extension) const {
-        return ioctl(m_kvm_fd, KVM_CHECK_EXTENSION, extension) > 0;
+        return ioctl(kvm_fd, KVM_CHECK_EXTENSION, extension) > 0;
     }
-    
-    [[nodiscard]] std::expected<size_t, std::error_code> get_vcpu_mmap_size() const {
-        int size = ioctl(m_kvm_fd, KVM_GET_VCPU_MMAP_SIZE, 0);
+
+    [[nodiscard]] expected<size_t, std::error_code> get_vcpu_mmap_size() const {
+        int size = ioctl(kvm_fd, KVM_GET_VCPU_MMAP_SIZE, 0);
         if (size < 0) {
-            return std::unexpected(std::error_code{errno, std::system_category()});
+            return unexpected(std::error_code{errno, std::system_category()});
         }
         return static_cast<size_t>(size);
     }
-    
+
     void print_capabilities() const {
-        std::println("=== KVM Capabilities ===\n");
-        
+        println("=== KVM Capabilities ===\n");
+
         // API Version
         if (auto version = get_api_version()) {
-            std::println("API Version: {}", *version);
+            println("API Version: {}", *version);
         } else {
-            std::println("Failed to get API version: {}", version.error().message());
+            println("Failed to get API version: {}", version.error().message());
             return;
         }
-        
+
         // VCPU mmap size
         if (auto mmap_size = get_vcpu_mmap_size()) {
-            std::println("VCPU mmap size: {} bytes\n", *mmap_size);
+            println("VCPU mmap size: {} bytes\n", *mmap_size);
         }
-        
+
         // Common extensions
         struct Extension {
-            int m_id;
-            std::string_view m_name;
-            std::string_view m_description;
+            int id;
+            std::string_view name;
+            std::string_view description;
         };
-        
+
         std::vector<Extension> extensions = {
             {KVM_CAP_IRQCHIP, "KVM_CAP_IRQCHIP", "In-kernel interrupt controller"},
             {KVM_CAP_HLT, "KVM_CAP_HLT", "HLT instruction support"},
@@ -190,59 +362,89 @@ struct KVMProbe {
             {KVM_CAP_PPC_ENABLE_HCALL, "KVM_CAP_PPC_ENABLE_HCALL", "PowerPC enable hypercall"},
             {KVM_CAP_CHECK_EXTENSION_VM, "KVM_CAP_CHECK_EXTENSION_VM", "Check VM extension"}
         };
-        
-        std::println("Supported Extensions:");
-        std::println("---------------------");
-        
-        for (const auto& ext : extensions) {
-            bool supported = check_extension(ext.m_id);
 
-            std::println("{:<35} {:<8} {}", 
-                        ext.m_name, 
+        println("Supported Extensions:");
+        println("---------------------");
+
+        for (const auto& ext : extensions) {
+            bool supported = check_extension(ext.id);
+            println("{:<35} {:<8} {}", 
+                        ext.name, 
                         supported ? "[YES]" : "[NO]", 
-                        ext.m_description);
+                        ext.description);
         }
-        
+
         // Get numeric capability values for some extensions
-        std::println("\nNumeric Capabilities:");
-        std::println("--------------------");
-        
-        if (int max_vcpus = ioctl(m_kvm_fd, KVM_CHECK_EXTENSION, KVM_CAP_NR_VCPUS); max_vcpus > 0) {
-            std::println("Recommended max VCPUs: {}", max_vcpus);
+        println("\nNumeric Capabilities:");
+        println("--------------------");
+
+        if (int max_vcpus = ioctl(kvm_fd, KVM_CHECK_EXTENSION, KVM_CAP_NR_VCPUS); max_vcpus > 0) {
+            println("Recommended max VCPUs: {}", max_vcpus);
         }
-        
-        if (int hard_max_vcpus = ioctl(m_kvm_fd, KVM_CHECK_EXTENSION, KVM_CAP_MAX_VCPUS); hard_max_vcpus > 0) {
-            std::println("Hard limit max VCPUs: {}", hard_max_vcpus);
+
+        if (int hard_max_vcpus = ioctl(kvm_fd, KVM_CHECK_EXTENSION, KVM_CAP_MAX_VCPUS); hard_max_vcpus > 0) {
+            println("Hard limit max VCPUs: {}", hard_max_vcpus);
         }
-        
-        if (int max_memslots = ioctl(m_kvm_fd, KVM_CHECK_EXTENSION, KVM_CAP_NR_MEMSLOTS); max_memslots > 0) {
-            std::println("Max memory slots: {}", max_memslots);
+
+        if (int max_memslots = ioctl(kvm_fd, KVM_CHECK_EXTENSION, KVM_CAP_NR_MEMSLOTS); max_memslots > 0) {
+            println("Max memory slots: {}", max_memslots);
         }
-        
-        if (int tsc_khz = ioctl(m_kvm_fd, KVM_CHECK_EXTENSION, KVM_CAP_GET_TSC_KHZ); tsc_khz > 0) {
-            std::println("TSC frequency: {} kHz", tsc_khz);
+
+        if (int tsc_khz = ioctl(kvm_fd, KVM_CHECK_EXTENSION, KVM_CAP_GET_TSC_KHZ); tsc_khz > 0) {
+            println("TSC frequency: {} kHz", tsc_khz);
         }
     }
 
-    int m_kvm_fd{-1};
-    
+private:
+    int kvm_fd{-1};
 };
 
 int main() {
-    KVMProbe probe;
-    
-    if (auto result = probe.initialize(); !result) {
+    println("=== KVM Database Probe with WAL Devices ===\n");
 
-        std::println("Failed to initialize KVM: {}", result.error().message());
-        std::println("Make sure:");
-        std::println("1. KVM is loaded (modprobe kvm kvm-intel/kvm-amd)");
-        std::println("2. /dev/kvm exists and is accessible");
-        std::println("3. You have proper permissions");
+    // Check if running as root (required for device creation)
+    if (geteuid() != 0) {
+        println("Warning: Not running as root. Device creation may fail.");
+        println("Try: sudo ./kvm_db\n");
+    }
 
+    // Initialize WAL device manager
+    WALDeviceManager wal_manager;
+
+    // Create the WAL devices
+    println("Creating WAL devices...");
+    if (auto result = wal_manager.create_devices(); !result) {
+        println("Failed to create WAL devices: {}", result.error().message());
+        println("Make sure you're running as root (sudo)");
         return EXIT_FAILURE;
     }
-    
+
+    // Test the devices
+    if (auto result = wal_manager.test_devices(); !result) {
+        println("Warning: WAL device test failed: {}", result.error().message());
+    } else {
+        println("All WAL devices verified successfully");
+    }
+
+    println(""); // Empty line for readability
+
+    // Initialize KVM probe
+    KVMProbe probe;
+
+    if (auto result = probe.initialize(); !result) {
+        println("Failed to initialize KVM: {}", result.error().message());
+        println("Make sure:");
+        println("1. KVM is loaded (modprobe kvm kvm-intel/kvm-amd)");
+        println("2. /dev/kvm exists and is accessible");
+        println("3. You have proper permissions");
+        return 1;
+    }
+
+    // Run the probe
     probe.print_capabilities();
+
+    // Device cleanup happens automatically via RAII when wal_manager goes out of scope
+    println("\nShutdown: WAL devices will be cleaned up automatically...");
 
     return EXIT_SUCCESS;
 }

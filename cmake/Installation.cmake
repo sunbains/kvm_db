@@ -25,7 +25,7 @@ function(configure_installation)
     set(CPACK_PACKAGE_NAME "${PROJECT_NAME}")
     set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
     set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${PROJECT_DESCRIPTION}")
-    set(CPACK_PACKAGE_VENDOR "KVM Probe Project")
+    set(CPACK_PACKAGE_VENDOR "KVM Database Project")
     set(CPACK_PACKAGE_CONTACT "developer@example.com")
     
     # Platform-specific package generators
@@ -56,8 +56,8 @@ function(configure_installation)
     
     # Component-based packaging
     set(CPACK_COMPONENTS_ALL Runtime Documentation)
-    set(CPACK_COMPONENT_RUNTIME_DISPLAY_NAME "KVM Probe Executable")
-    set(CPACK_COMPONENT_RUNTIME_DESCRIPTION "Main KVM probe executable")
+    set(CPACK_COMPONENT_RUNTIME_DISPLAY_NAME "KVM Database Executable")
+    set(CPACK_COMPONENT_RUNTIME_DESCRIPTION "Main KVM database executable")
     set(CPACK_COMPONENT_DOCUMENTATION_DISPLAY_NAME "Documentation")
     set(CPACK_COMPONENT_DOCUMENTATION_DESCRIPTION "Documentation files")
     

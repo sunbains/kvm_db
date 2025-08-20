@@ -2,22 +2,22 @@ cmake_minimum_required(VERSION 3.25...3.30)
 
 project(KVMDb
     VERSION 1.0.0
-    DESCRIPTION "C++23 KVM API capability probe using modern features"
     LANGUAGES CXX
+    DESCRIPTION "C++23 KVM API capability probe using modern features"
 )
 
 # Only do these if this is the main project and not included via add_subdirectory
 if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
     # Set global properties for clean project organization
     set_property(GLOBAL PROPERTY USE_FOLDERS ON)
-    
+
     # Include helpful modules
     include(GNUInstallDirs)
     include(CTest)
-    
+
     # Add custom CMake modules path
     list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
-    
+
     # Export compile commands for language servers (clangd, etc.)
     set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 endif()
@@ -96,8 +96,8 @@ add_executable(kvm_db src/kvm_db.cc)
 target_compile_features(kvm_db PRIVATE cxx_std_23)
 
 # Link to our interface libraries
-target_link_libraries(kvm_db PRIVATE 
-    kvm_db_options 
+target_link_libraries(kvm_db PRIVATE
+    kvm_db_options
     kvm_db_warnings
 )
 
@@ -109,6 +109,21 @@ target_include_directories(kvm_db PRIVATE
 
 # Linux-specific libraries
 target_link_libraries(kvm_db PRIVATE pthread)
+
+# Check if we need to link filesystem library separately (older GCC)
+include(CheckCXXSourceCompiles)
+check_cxx_source_compiles("
+    #include <filesystem>
+    int main() {
+        std::filesystem::exists(\"/tmp\");
+        return 0;
+    }
+" FILESYSTEM_NO_LINK_NEEDED)
+
+if(NOT FILESYSTEM_NO_LINK_NEEDED)
+    # Try linking with stdc++fs for older GCC versions
+    target_link_libraries(kvm_db PRIVATE stdc++fs)
+endif()
 
 # Add subdirectories if they exist
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests" AND CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)

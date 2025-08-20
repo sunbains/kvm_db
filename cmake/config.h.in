@@ -2,11 +2,11 @@
 #pragma once
 
 // Project information
-#define KVM_PROBE_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
-#define KVM_PROBE_VERSION_MINOR @PROJECT_VERSION_MINOR@
-#define KVM_PROBE_VERSION_PATCH @PROJECT_VERSION_PATCH@
-#define KVM_PROBE_VERSION "@PROJECT_VERSION@"
-#define KVM_PROBE_NAME "@PROJECT_NAME@"
+#define KVM_DB_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
+#define KVM_DB_VERSION_MINOR @PROJECT_VERSION_MINOR@
+#define KVM_DB_VERSION_PATCH @PROJECT_VERSION_PATCH@
+#define KVM_DB_VERSION "@PROJECT_VERSION@"
+#define KVM_DB_NAME "@PROJECT_NAME@"
 
 // System capabilities - using @VAR@ syntax for CMake substitution
 #cmakedefine01 HAVE_LINUX_KVM_H
@@ -28,7 +28,7 @@
 #cmakedefine01 HAVE_STD_PRINT
 #cmakedefine01 HAVE_STD_FORMAT
 #cmakedefine01 HAVE_STD_EXPECTED
-#cmakedefine01 COMPILER_SUPPORTS_STD_PRINT
+// #cmakedefine01 COMPILER_SUPPORTS_STD_PRINT
 
 // Platform detection
 #ifdef __linux__

@@ -65,4 +65,3 @@ function(configure_project_warnings target_name)
         )
     endif()
 endfunction()
-

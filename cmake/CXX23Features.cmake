@@ -70,7 +70,7 @@ endfunction()
 
 # Additional feature test for specific C++23 library features  
 function(check_cxx23_feature feature_name test_code)
-    set(test_file "${CMAKE_BINARY_DIR}/test_${feature_name}.cpp")
+    set(test_file "${CMAKE_BINARY_DIR}/test_${feature_name}.cc")
     file(WRITE "${test_file}" "${test_code}")
     
     try_compile(${feature_name}_AVAILABLE

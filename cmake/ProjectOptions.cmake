@@ -60,4 +60,3 @@ function(configure_project_options target_name)
         target_compile_options(${target_name} INTERFACE /permissive- /Zc:__cplusplus)
     endif()
 endfunction()
-
