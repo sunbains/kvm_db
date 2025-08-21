@@ -37,7 +37,7 @@
 #define HAVE_CXX23_CONCEPTS 1
 
 /* Filesystem support */
-#define FILESYSTEM_NO_LINK_NEEDED 0
+#define FILESYSTEM_NO_LINK_NEEDED 1
 
 /* Build configuration */
 #define BUILD_DRIVER_BY_DEFAULT 1

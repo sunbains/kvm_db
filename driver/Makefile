@@ -4,8 +4,8 @@
 MODULE_NAME := wal_driver
 
 # Source files
-obj-m += $(MODULE_NAME)_main.o
-wal_module-objs := wal_driver_main.o
+obj-m += $(MODULE_NAME).o
+wal_driver-objs := wal_driver_main.o
 
 # Kernel build directory (automatically detected)
 KERNEL_DIR ?= /lib/modules/$(shell uname -r)/build

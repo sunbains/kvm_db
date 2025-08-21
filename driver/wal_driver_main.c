@@ -595,7 +595,11 @@ int wal_driver_init_block_device(void)
         goto fail_queue;
     }
     wal_global.block_queue = wal_global.block_disk->queue;
-    wal_global.block_queue->queuedata = NULL;
+    
+    /* Set queue limits for modern kernels */
+    blk_queue_logical_block_size(wal_global.block_queue, WAL_BLOCK_SIZE);
+    blk_queue_physical_block_size(wal_global.block_queue, WAL_BLOCK_SIZE);
+    blk_queue_max_hw_sectors(wal_global.block_queue, BLK_SAFE_MAX_SECTORS);
 #else
     /* For older kernels, create queue then allocate gendisk */
     wal_global.block_queue = blk_init_queue(wal_block_request, &wal_global.block_lock);
@@ -613,9 +617,6 @@ int wal_driver_init_block_device(void)
     }
 #endif
 
-    /* Set queue properties */
-    blk_queue_logical_block_size(wal_global.block_queue, WAL_BLOCK_SIZE);
-
     /* Register block device - use dynamic major number */
     major_num = register_blkdev(0, WAL_DEVICE_NAME);
     if (major_num < 0) {
@@ -628,7 +629,8 @@ int wal_driver_init_block_device(void)
 
     /* Configure gendisk */
     wal_global.block_disk->major = major_num;
-    wal_global.block_disk->first_minor = WAL_BLOCK_MINOR;
+    wal_global.block_disk->first_minor = 0;  /* Use 0 for simplicity */
+    wal_global.block_disk->minors = 1;       /* Only one minor number needed */
     wal_global.block_disk->fops = &wal_block_ops;
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)
     wal_global.block_disk->queue = wal_global.block_queue;
@@ -639,12 +641,12 @@ int wal_driver_init_block_device(void)
     /* Add disk */
     ret = add_disk(wal_global.block_disk);
     if (ret) {
-        pr_err("wal_driver: Failed to add disk\n");
+        pr_err("wal_driver: Failed to add disk (error: %d)\n", ret);
         goto fail_add_disk;
     }
 
     pr_info("wal_driver: Block device /dev/%s created successfully (major=%d, minor=%d)\n",
-            WAL_DEVICE_NAME, major_num, WAL_BLOCK_MINOR);
+            WAL_DEVICE_NAME, major_num, 0);
     return 0;
 
 fail_add_disk:
@@ -742,9 +744,9 @@ static int __init wal_driver_init(void)
 
     pr_info("wal_driver: WAL driver initialized successfully\n");
     pr_info("wal_driver: Character device: /dev/%s (major=%d, minor=%d)\n",
-            WAL_CHAR_NAME, WAL_MAJOR, WAL_CHAR_MINOR);
+            WAL_CHAR_NAME, MAJOR(wal_global.char_dev), WAL_CHAR_MINOR);
     pr_info("wal_driver: Block device: /dev/%s (major=%d, minor=%d)\n",
-            WAL_DEVICE_NAME, WAL_MAJOR, WAL_BLOCK_MINOR);
+            WAL_DEVICE_NAME, wal_global.block_disk->major, 0);
 
     return 0;
 
