@@ -4,6 +4,7 @@
 #include <system_error>
 
 #include "kvm_db/config.h"
+#include "kvm_output.h"
 
 static constexpr const char* CHAR_DEVICE_PATH = "/dev/rwal";
 static constexpr const char* BLOCK_DEVICE_PATH = "/dev/wal";

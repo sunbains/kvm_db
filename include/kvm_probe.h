@@ -4,6 +4,7 @@
 #include <system_error>
 
 #include "kvm_db/config.h"
+#include "kvm_output.h"
 
 struct KVM_probe {
   KVM_probe() = default;

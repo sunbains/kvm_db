@@ -37,11 +37,11 @@
 #define HAVE_CXX23_CONCEPTS 1
 
 /* Filesystem support */
-#define FILESYSTEM_NO_LINK_NEEDED 0
+#define FILESYSTEM_NO_LINK_NEEDED 1
 
 /* Build configuration */
 #define BUILD_DRIVER_BY_DEFAULT 0
-#define BUILD_DRIVER_TESTS 0
+#define BUILD_DRIVER_TESTS 1
 
 /* System information */
 #define CMAKE_SYSTEM_NAME "Linux"
