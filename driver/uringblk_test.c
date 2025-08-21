@@ -7,6 +7,7 @@
  * - Polling and fixed buffer support
  */
 
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,11 +16,88 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
+#include <signal.h>
 #include <liburing.h>
 #include <time.h>
 #include <getopt.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <inttypes.h>
 
-#include "uringblk_driver.h"
+/* Userspace definitions from uringblk_driver.h */
+#define URINGBLK_ABI_MAJOR  1
+#define URINGBLK_ABI_MINOR  0
+
+enum uringblk_ucmd {
+    URINGBLK_UCMD_IDENTIFY      = 0x01,
+    URINGBLK_UCMD_GET_LIMITS    = 0x02,
+    URINGBLK_UCMD_GET_FEATURES  = 0x03,
+    URINGBLK_UCMD_SET_FEATURES  = 0x04,
+    URINGBLK_UCMD_GET_GEOMETRY  = 0x05,
+    URINGBLK_UCMD_GET_STATS     = 0x06,
+    URINGBLK_UCMD_ZONE_MGMT     = 0x10,
+    URINGBLK_UCMD_FIRMWARE_OP   = 0x20,
+};
+
+struct uringblk_ucmd_hdr {
+    uint16_t abi_major;
+    uint16_t abi_minor;
+    uint16_t opcode;           /* enum uringblk_ucmd */
+    uint16_t flags;            /* reserved */
+    uint32_t payload_len;
+    /* payload follows */
+} __attribute__((packed));
+
+struct uringblk_identify {
+    uint8_t  model[40];
+    uint8_t  firmware[16];
+    uint32_t logical_block_size;
+    uint32_t physical_block_size;
+    uint64_t capacity_sectors;
+    uint64_t features_bitmap;
+    uint32_t queue_count;
+    uint32_t queue_depth;
+    uint32_t max_segments;
+    uint32_t max_segment_size;
+    uint32_t dma_alignment;
+    uint32_t io_min;
+    uint32_t io_opt;
+    uint32_t discard_granularity;
+    uint64_t discard_max_bytes;
+} __attribute__((packed));
+
+struct uringblk_stats {
+    uint64_t read_ops;
+    uint64_t write_ops;
+    uint64_t flush_ops;
+    uint64_t discard_ops;
+    uint64_t read_sectors;
+    uint64_t write_sectors;
+    uint64_t read_bytes;
+    uint64_t write_bytes;
+    uint64_t queue_full_events;
+    uint64_t media_errors;
+    uint64_t retries;
+    uint32_t p50_read_latency_us;
+    uint32_t p99_read_latency_us;
+    uint32_t p50_write_latency_us;
+    uint32_t p99_write_latency_us;
+} __attribute__((packed));
+
+/* Fallback for io_uring_prep_cmd if not available */
+#ifndef IORING_OP_URING_CMD
+#define IORING_OP_URING_CMD 34
+static inline void io_uring_prep_cmd(struct io_uring_sqe *sqe, int fd,
+                                     int cmd, int arg1, int arg2, 
+                                     void *addr, size_t len)
+{
+    io_uring_prep_rw(IORING_OP_URING_CMD, sqe, fd, addr, len, 0);
+    sqe->len = len;
+    sqe->buf_index = cmd;
+    sqe->rw_flags = arg1;
+    sqe->buf_group = arg2;
+}
+#endif
 
 #define DEFAULT_DEVICE "/dev/uringblk0"
 #define TEST_BLOCK_SIZE 4096
@@ -134,8 +212,8 @@ static int test_uring_cmd_identify(int fd, struct io_uring *ring)
     printf("  Firmware: %.16s\n", id.firmware);
     printf("  Logical block size: %u bytes\n", id.logical_block_size);
     printf("  Physical block size: %u bytes\n", id.physical_block_size);
-    printf("  Capacity: %llu sectors\n", id.capacity_sectors);
-    printf("  Features: 0x%llx\n", id.features_bitmap);
+    printf("  Capacity: %" PRIu64 " sectors\n", id.capacity_sectors);
+    printf("  Features: 0x%" PRIx64 "\n", id.features_bitmap);
     printf("  Queue count: %u\n", id.queue_count);
     printf("  Queue depth: %u\n", id.queue_depth);
     printf("  Max segments: %u\n", id.max_segments);
@@ -198,14 +276,14 @@ static int test_uring_cmd_get_stats(int fd, struct io_uring *ring)
     memcpy(&stats, cmd_buf + sizeof(hdr), sizeof(stats));
     
     printf("Device Statistics:\n");
-    printf("  Read ops: %llu\n", stats.read_ops);
-    printf("  Write ops: %llu\n", stats.write_ops);
-    printf("  Flush ops: %llu\n", stats.flush_ops);
-    printf("  Discard ops: %llu\n", stats.discard_ops);
-    printf("  Read bytes: %llu\n", stats.read_bytes);
-    printf("  Write bytes: %llu\n", stats.write_bytes);
-    printf("  Queue full events: %llu\n", stats.queue_full_events);
-    printf("  Media errors: %llu\n", stats.media_errors);
+    printf("  Read ops: %" PRIu64 "\n", stats.read_ops);
+    printf("  Write ops: %" PRIu64 "\n", stats.write_ops);
+    printf("  Flush ops: %" PRIu64 "\n", stats.flush_ops);
+    printf("  Discard ops: %" PRIu64 "\n", stats.discard_ops);
+    printf("  Read bytes: %" PRIu64 "\n", stats.read_bytes);
+    printf("  Write bytes: %" PRIu64 "\n", stats.write_bytes);
+    printf("  Queue full events: %" PRIu64 "\n", stats.queue_full_events);
+    printf("  Media errors: %" PRIu64 "\n", stats.media_errors);
 
     io_uring_cqe_seen(ring, cqe);
     return 0;
