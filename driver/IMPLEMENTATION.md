@@ -51,11 +51,11 @@
 ```
 App     io_uring    Block Layer    uringblk     Virtual Storage
  │          │            │            │               │
- │──SQE─────▶│            │            │               │
- │          │────bio─────▶│            │               │
- │          │            │──request───▶│               │
+ │──SQE────▶│            │            │               │
+ │          │────bio────▶│            │               │
+ │          │            │──request──▶│               │
  │          │            │            │──memcpy──────▶│
- │          │            │◀─complete───│               │
+ │          │            │◀─complete──│               │
  │          │◀───CQE─────│            │               │
  │◀─────────│            │            │               │
 ```
@@ -65,15 +65,15 @@ App     io_uring    Block Layer    uringblk     Virtual Storage
 ```
 App     io_uring    Block Layer    uringblk     Virtual Storage
  │          │            │            │               │
- │──SQE─────▶│            │            │               │
- │          │────bio─────▶│            │               │
- │          │            │──request───▶│               │
+ │──SQE────▶│            │            │               │
+ │          │────bio────▶│            │               │
+ │          │            │──request──▶│               │
  │          │            │            │──memcpy──────▶│
- │          │            │◀─complete───│               │
+ │          │            │◀─complete──│               │
  │          │            │            │               │
- │──poll────▶│            │            │               │
- │          │────poll────▶│            │               │
- │          │            │──poll──────▶│               │
+ │──poll───▶│            │            │               │
+ │          │────poll───▶│            │               │
+ │          │            │──poll─────▶│               │
  │          │◀───CQE─────│◀───────────│               │
  │◀─────────│            │            │               │
 ```
@@ -83,11 +83,11 @@ App     io_uring    Block Layer    uringblk     Virtual Storage
 ```
 App     io_uring    uringblk    Admin Handler
  │          │          │             │
- │──CMD─────▶│          │             │
- │          │──uring───▶│             │
- │          │          │──validate───▶│
+ │──CMD────▶│          │             │
+ │          │──uring──▶│             │
+ │          │          │──validate──▶│
  │          │          │             │
- │          │          │──execute────▶│
+ │          │          │──execute───▶│
  │          │          │◀─response───│
  │          │◀─CQE─────│             │
  │◀─────────│          │             │
