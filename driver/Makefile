@@ -27,7 +27,7 @@ all: module
 # Build the kernel module
 module:
 	@echo "Building WAL driver kernel module..."
-	$(MAKE) -C $(KERNEL_DIR) M=$(PWD) modules
+	@$(MAKE) -C $(KERNEL_DIR) M=$(PWD) modules 2>&1 | grep -v "warning: the compiler differs from the one used to build the kernel" || true
 	@echo "Build complete. Module: $(MODULE_NAME).ko"
 
 # Clean build artifacts

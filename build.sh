@@ -150,6 +150,17 @@ build_project() {
         make -j$(nproc)
     fi
     
+    # Build driver if enabled
+    if [ "$DRIVER_BUILD" = "ON" ]; then
+        log_info "Building WAL driver as part of default build..."
+        if make help 2>/dev/null | grep -q wal_driver_build; then
+            make wal_driver_build
+            log_success "WAL driver built successfully"
+        else
+            log_warning "WAL driver targets not available. Skipping driver build."
+        fi
+    fi
+    
     log_success "Build completed successfully"
     cd ..
 }
@@ -164,7 +175,7 @@ build_driver() {
     cd "$BUILD_DIR"
     
     # Check if driver targets are available
-    if ! make help | grep -q wal_driver_build; then
+    if ! make help 2>/dev/null | grep -q wal_driver_build; then
         log_error "WAL driver targets not available. Driver build may be disabled."
         log_info "Make sure kernel headers are installed and try reconfiguring."
         cd ..
@@ -372,7 +383,7 @@ show_help_targets() {
     if [ -d "$BUILD_DIR" ]; then
         cd "$BUILD_DIR"
         log_info "Available make targets:"
-        make help | grep -E "(wal_driver|test|install)" || true
+        make help 2>/dev/null | grep -E "(wal_driver|test|install)" || true
         cd ..
     fi
 }
