@@ -1,7 +1,7 @@
 # uringblk: io_uring-first Linux Block Driver Specification
 
 **Version:** 1.0  
-**Date:** January 2025  
+**Date:** August 2025  
 **Author:** KVM Database Project  
 
 ## Table of Contents
