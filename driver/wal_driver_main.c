@@ -521,13 +521,15 @@ int wal_driver_init_char_device(void)
 {
     int ret;
 
-    /* Allocate device number */
-    wal_global.char_dev = MKDEV(WAL_MAJOR, WAL_CHAR_MINOR);
-    ret = register_chrdev_region(wal_global.char_dev, 1, WAL_CHAR_NAME);
+    /* Allocate device number dynamically - this is the modern approach */
+    ret = alloc_chrdev_region(&wal_global.char_dev, WAL_CHAR_MINOR, 1, WAL_CHAR_NAME);
     if (ret < 0) {
-        pr_err("wal_driver: Failed to register character device region\n");
+        pr_err("wal_driver: Failed to allocate character device region\n");
         return ret;
     }
+
+    pr_info("wal_driver: Allocated character device major=%d, minor=%d\n",
+            MAJOR(wal_global.char_dev), MINOR(wal_global.char_dev));
 
     /* Initialize and add character device */
     cdev_init(&wal_global.char_cdev, &wal_char_fops);
@@ -539,12 +541,8 @@ int wal_driver_init_char_device(void)
         goto fail_cdev_add;
     }
 
-    /* Create device class - Updated for newer kernels */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0)
-    wal_global.char_class = class_create(WAL_CHAR_NAME);
-#else
+    /* Create device class */
     wal_global.char_class = class_create(THIS_MODULE, WAL_CHAR_NAME);
-#endif
     if (IS_ERR(wal_global.char_class)) {
         pr_err("wal_driver: Failed to create character device class\n");
         ret = PTR_ERR(wal_global.char_class);
@@ -560,7 +558,8 @@ int wal_driver_init_char_device(void)
         goto fail_device_create;
     }
 
-    pr_info("wal_driver: Character device /dev/%s created successfully\n", WAL_CHAR_NAME);
+    pr_info("wal_driver: Character device /dev/%s created successfully (major=%d, minor=%d)\n", 
+            WAL_CHAR_NAME, MAJOR(wal_global.char_dev), MINOR(wal_global.char_dev));
     return 0;
 
 fail_device_create:
@@ -575,6 +574,7 @@ fail_cdev_add:
 int wal_driver_init_block_device(void)
 {
     int ret;
+    int major_num;
 
     /* Allocate virtual storage */
     wal_global.block_data = vzalloc(WAL_BLOCK_SECTORS * WAL_BLOCK_SIZE);
@@ -586,22 +586,7 @@ int wal_driver_init_block_device(void)
     /* Initialize spinlock */
     spin_lock_init(&wal_global.block_lock);
 
-    /* Create block device - Updated for newer kernels */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
-    wal_global.block_disk = blk_alloc_disk(NUMA_NO_NODE);
-    if (!wal_global.block_disk) {
-        pr_err("wal_driver: Failed to allocate block device disk\n");
-        ret = -ENOMEM;
-        goto fail_disk;
-    }
-    wal_global.block_queue = wal_global.block_disk->queue;
-    
-    /* Set up bio submission for newer kernels */
-    wal_global.block_disk->queue->queuedata = &wal_global;
-    blk_queue_logical_block_size(wal_global.block_disk->queue, WAL_BLOCK_SIZE);
-    blk_queue_physical_block_size(wal_global.block_disk->queue, WAL_BLOCK_SIZE);
-#else
-    /* Create request queue for older kernels */
+    /* Create request queue */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
     wal_global.block_queue = blk_alloc_queue(NUMA_NO_NODE);
     if (!wal_global.block_queue) {
@@ -619,55 +604,51 @@ int wal_driver_init_block_device(void)
     }
 #endif
 
-    /* Allocate gendisk for older kernels */
+    /* Set queue properties */
+    blk_queue_logical_block_size(wal_global.block_queue, WAL_BLOCK_SIZE);
+
+    /* Allocate gendisk */
     wal_global.block_disk = alloc_disk(1);
     if (!wal_global.block_disk) {
         pr_err("wal_driver: Failed to allocate block device disk\n");
         ret = -ENOMEM;
         goto fail_disk;
     }
-    wal_global.block_disk->queue = wal_global.block_queue;
-    blk_queue_logical_block_size(wal_global.block_queue, WAL_BLOCK_SIZE);
-#endif
+
+    /* Register block device - use dynamic major number */
+    major_num = register_blkdev(0, WAL_DEVICE_NAME);
+    if (major_num < 0) {
+        pr_err("wal_driver: Failed to register block device\n");
+        ret = major_num;
+        goto fail_register_blkdev;
+    }
+
+    pr_info("wal_driver: Allocated block device major number: %d\n", major_num);
 
     /* Configure gendisk */
-    wal_global.block_disk->major = WAL_MAJOR;
+    wal_global.block_disk->major = major_num;
     wal_global.block_disk->first_minor = WAL_BLOCK_MINOR;
     wal_global.block_disk->fops = &wal_block_ops;
+    wal_global.block_disk->queue = wal_global.block_queue;
     snprintf(wal_global.block_disk->disk_name, 32, WAL_DEVICE_NAME);
     set_capacity(wal_global.block_disk, WAL_BLOCK_SECTORS);
 
     /* Add disk */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
-    ret = add_disk(wal_global.block_disk);
-    if (ret) {
-        pr_err("wal_driver: Failed to add disk\n");
-        goto fail_add_disk;
-    }
-#else
     add_disk(wal_global.block_disk);
-#endif
 
-    pr_info("wal_driver: Block device /dev/%s created successfully\n", WAL_DEVICE_NAME);
+    pr_info("wal_driver: Block device /dev/%s created successfully (major=%d, minor=%d)\n",
+            WAL_DEVICE_NAME, major_num, WAL_BLOCK_MINOR);
     return 0;
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
-fail_add_disk:
+fail_register_blkdev:
     put_disk(wal_global.block_disk);
-    goto fail_queue;
-#endif
-
 fail_disk:
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
-    /* For newer kernels, blk_alloc_disk handles the queue */
-#else
-    put_disk(wal_global.block_disk);
     blk_cleanup_queue(wal_global.block_queue);
-#endif
 fail_queue:
     vfree(wal_global.block_data);
     return ret;
 }
+
 
 void wal_driver_cleanup_char_device(void)
 {
@@ -685,25 +666,29 @@ void wal_driver_cleanup_char_device(void)
 
 void wal_driver_cleanup_block_device(void)
 {
+    int major_num = 0;
+
     if (wal_global.block_disk) {
+        major_num = wal_global.block_disk->major;
         del_gendisk(wal_global.block_disk);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
         put_disk(wal_global.block_disk);
-#else
-        put_disk(wal_global.block_disk);
-#endif
     }
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 15, 0)
+
+    if (major_num > 0) {
+        unregister_blkdev(major_num, WAL_DEVICE_NAME);
+        pr_info("wal_driver: Unregistered block device major number: %d\n", major_num);
+    }
+
     if (wal_global.block_queue) {
         blk_cleanup_queue(wal_global.block_queue);
     }
-#endif
     if (wal_global.block_data) {
         vfree(wal_global.block_data);
     }
 
     pr_info("wal_driver: Block device cleaned up\n");
 }
+
 
 /*
  * Module initialization and cleanup
