@@ -12,7 +12,7 @@
 #include <linux/ioctl.h>
 #include <linux/version.h>
 #include <linux/blk-mq.h>
-#include <linux/genhd.h>
+#include <linux/blkdev.h>
 #include <linux/io_uring.h>
 
 /* Device constants */
@@ -172,7 +172,7 @@ struct uringblk_queue {
 /* Function declarations */
 int uringblk_init_device(struct uringblk_device *dev, int minor);
 void uringblk_cleanup_device(struct uringblk_device *dev);
-int uringblk_handle_uring_cmd(struct io_uring_cmd *cmd);
+int uringblk_handle_uring_cmd(struct io_uring_cmd *cmd, unsigned int issue_flags);
 int uringblk_poll(struct blk_mq_hw_ctx *hctx, struct io_uring_cmd *ioucmd);
 
 /* Block device operations */
@@ -181,11 +181,11 @@ blk_status_t uringblk_queue_rq(struct blk_mq_hw_ctx *hctx,
 int uringblk_init_hctx(struct blk_mq_hw_ctx *hctx, void *data, 
                        unsigned int hctx_idx);
 void uringblk_exit_hctx(struct blk_mq_hw_ctx *hctx, unsigned int hctx_idx);
-int uringblk_poll_fn(struct blk_mq_hw_ctx *hctx, struct io_uring_cmd *ioucmd);
+int uringblk_poll_fn(struct blk_mq_hw_ctx *hctx, struct io_comp_batch *iob);
 
 /* Block device file operations */
-int uringblk_open(struct block_device *bdev, fmode_t mode);
-void uringblk_release(struct gendisk *disk, fmode_t mode);
+int uringblk_open(struct gendisk *disk, blk_mode_t mode);
+void uringblk_release(struct gendisk *disk);
 int uringblk_getgeo(struct block_device *bdev, struct hd_geometry *geo);
 
 /* URING_CMD handlers */
@@ -201,6 +201,10 @@ extern unsigned int uringblk_nr_hw_queues;
 extern unsigned int uringblk_queue_depth;
 extern bool uringblk_enable_poll;
 extern bool uringblk_enable_discard;
+
+/* Sysfs functions */
+int uringblk_sysfs_create(struct gendisk *disk);
+void uringblk_sysfs_remove(struct gendisk *disk);
 
 /* ABI version */
 #define URINGBLK_ABI_MAJOR  1

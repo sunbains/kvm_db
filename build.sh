@@ -37,6 +37,14 @@ print_usage() {
     echo "  driver-reload       Reload WAL driver (requires sudo)"
     echo "  driver-test         Test WAL driver"
     echo "  driver-status       Check WAL driver status"
+    echo "  uringblk            Build uringblk driver only"
+    echo "  uringblk-load       Load uringblk driver (requires sudo)"
+    echo "  uringblk-unload     Unload uringblk driver (requires sudo)"
+    echo "  uringblk-reload     Reload uringblk driver (requires sudo)"
+    echo "  uringblk-test       Test uringblk driver"
+    echo "  uringblk-benchmark  Benchmark uringblk driver"
+    echo "  uringblk-status     Check uringblk driver status"
+    echo "  uringblk-stats      Show uringblk driver statistics"
     echo "  test                Run all tests"
     echo "  install             Install everything"
     echo "  clean               Clean build directory"
@@ -44,8 +52,10 @@ print_usage() {
     echo "Examples:"
     echo "  $0                  # Configure and build"
     echo "  $0 build            # Build everything"
-    echo "  $0 driver-load      # Load driver (requires sudo)"
-    echo "  $0 driver-test      # Test driver functionality"
+    echo "  $0 driver-load      # Load WAL driver (requires sudo)"
+    echo "  $0 driver-test      # Test WAL driver functionality"
+    echo "  $0 uringblk-load    # Load uringblk driver (requires sudo)"
+    echo "  $0 uringblk-test    # Test uringblk driver functionality"
     echo "  $0 --debug build    # Debug build"
     echo "  $0 --clean          # Clean and reconfigure"
 }
@@ -203,6 +213,16 @@ load_driver() {
         make wal_driver_build
     fi
     
+    # Check if driver is already loaded and unload it first
+    if lsmod | grep -q "wal_driver"; then
+        log_info "WAL driver already loaded, unloading first..."
+        if [ "$EUID" -ne 0 ]; then
+            sudo make wal_driver_unload || true
+        else
+            make wal_driver_unload || true
+        fi
+    fi
+    
     # Check if running as root
     if [ "$EUID" -ne 0 ]; then
         log_info "Root privileges required. Running with sudo..."
@@ -310,6 +330,197 @@ driver_status() {
     echo ""
     log_info "Recent kernel messages:"
     make wal_driver_dmesg
+    cd ..
+}
+
+build_uringblk_driver() {
+    log_info "Building uringblk driver..."
+    
+    if [ ! -d "$BUILD_DIR" ]; then
+        configure_build
+    fi
+    
+    cd "$BUILD_DIR"
+    
+    # Check if uringblk driver targets are available
+    if ! make help 2>/dev/null | grep -q uringblk_driver_build; then
+        log_error "uringblk driver targets not available. Driver build may be disabled."
+        log_info "Make sure kernel headers are installed and try reconfiguring."
+        cd ..
+        exit 1
+    fi
+    
+    make uringblk_driver_build
+    log_success "uringblk driver built successfully"
+    cd ..
+}
+
+load_uringblk_driver() {
+    log_info "Loading uringblk driver..."
+    
+    if [ ! -d "$BUILD_DIR" ]; then
+        log_error "Build directory not found. Run 'build' first."
+        exit 1
+    fi
+    
+    cd "$BUILD_DIR"
+    
+    # Build driver first if not built
+    if [ ! -f "driver/uringblk/uringblk_driver.ko" ]; then
+        log_info "uringblk driver not built yet. Building first..."
+        make uringblk_driver_build
+    fi
+    
+    # Check if driver is already loaded and unload it first
+    if lsmod | grep -q "uringblk_driver"; then
+        log_info "uringblk driver already loaded, unloading first..."
+        if [ "$EUID" -ne 0 ]; then
+            sudo make uringblk_driver_unload || true
+        else
+            make uringblk_driver_unload || true
+        fi
+    fi
+    
+    # Check if running as root
+    if [ "$EUID" -ne 0 ]; then
+        log_info "Root privileges required. Running with sudo..."
+        sudo make uringblk_driver_load
+    else
+        make uringblk_driver_load
+    fi
+    
+    log_success "uringblk driver loaded successfully"
+    log_info "Driver device should be available at:"
+    log_info "  Block device: /dev/uringblk0"
+    cd ..
+}
+
+unload_uringblk_driver() {
+    log_info "Unloading uringblk driver..."
+    
+    if [ ! -d "$BUILD_DIR" ]; then
+        log_error "Build directory not found."
+        exit 1
+    fi
+    
+    cd "$BUILD_DIR"
+    
+    # Check if running as root
+    if [ "$EUID" -ne 0 ]; then
+        log_info "Root privileges required. Running with sudo..."
+        sudo make uringblk_driver_unload
+    else
+        make uringblk_driver_unload
+    fi
+    
+    log_success "uringblk driver unloaded successfully"
+    cd ..
+}
+
+reload_uringblk_driver() {
+    log_info "Reloading uringblk driver..."
+    
+    if [ ! -d "$BUILD_DIR" ]; then
+        log_error "Build directory not found. Run 'build' first."
+        exit 1
+    fi
+    
+    cd "$BUILD_DIR"
+    
+    # Check if running as root
+    if [ "$EUID" -ne 0 ]; then
+        log_info "Root privileges required. Running with sudo..."
+        sudo make uringblk_driver_reload
+    else
+        make uringblk_driver_reload
+    fi
+    
+    log_success "uringblk driver reloaded successfully"
+    cd ..
+}
+
+test_uringblk_driver() {
+    log_info "Testing uringblk driver..."
+    
+    if [ ! -d "$BUILD_DIR" ]; then
+        log_error "Build directory not found. Run 'build' first."
+        exit 1
+    fi
+    
+    cd "$BUILD_DIR"
+    
+    # Check if driver is loaded, if not load it
+    if ! lsmod | grep -q "uringblk_driver"; then
+        log_info "uringblk driver not loaded. Loading first..."
+        if [ "$EUID" -ne 0 ]; then
+            sudo make uringblk_driver_load
+        else
+            make uringblk_driver_load
+        fi
+    fi
+    
+    # Run tests
+    log_info "Running uringblk driver tests..."
+    make uringblk_driver_test
+    
+    log_success "uringblk driver tests completed"
+    cd ..
+}
+
+benchmark_uringblk_driver() {
+    log_info "Benchmarking uringblk driver..."
+    
+    if [ ! -d "$BUILD_DIR" ]; then
+        log_error "Build directory not found. Run 'build' first."
+        exit 1
+    fi
+    
+    cd "$BUILD_DIR"
+    
+    # Check if driver is loaded, if not load it
+    if ! lsmod | grep -q "uringblk_driver"; then
+        log_info "uringblk driver not loaded. Loading first..."
+        if [ "$EUID" -ne 0 ]; then
+            sudo make uringblk_driver_load
+        else
+            make uringblk_driver_load
+        fi
+    fi
+    
+    # Run benchmarks
+    log_info "Running uringblk driver benchmarks..."
+    make uringblk_driver_benchmark
+    
+    log_success "uringblk driver benchmarks completed"
+    cd ..
+}
+
+uringblk_driver_status() {
+    log_info "Checking uringblk driver status..."
+    
+    if [ ! -d "$BUILD_DIR" ]; then
+        log_error "Build directory not found."
+        exit 1
+    fi
+    
+    cd "$BUILD_DIR"
+    make uringblk_driver_status
+    echo ""
+    log_info "Recent kernel messages:"
+    make uringblk_driver_dmesg
+    cd ..
+}
+
+uringblk_driver_stats() {
+    log_info "Showing uringblk driver statistics..."
+    
+    if [ ! -d "$BUILD_DIR" ]; then
+        log_error "Build directory not found."
+        exit 1
+    fi
+    
+    cd "$BUILD_DIR"
+    make uringblk_driver_stats
     cd ..
 }
 
@@ -422,7 +633,7 @@ while [[ $# -gt 0 ]]; do
             VERBOSE="ON"
             shift
             ;;
-        configure|build|driver|driver-load|driver-unload|driver-reload|driver-test|driver-status|test|install|clean|help-targets)
+        configure|build|driver|driver-load|driver-unload|driver-reload|driver-test|driver-status|uringblk|uringblk-load|uringblk-unload|uringblk-reload|uringblk-test|uringblk-benchmark|uringblk-status|uringblk-stats|test|install|clean|help-targets)
             TARGET="$1"
             shift
             ;;
@@ -474,6 +685,30 @@ case $TARGET in
     driver-status)
         driver_status
         ;;
+    uringblk)
+        build_uringblk_driver
+        ;;
+    uringblk-load)
+        load_uringblk_driver
+        ;;
+    uringblk-unload)
+        unload_uringblk_driver
+        ;;
+    uringblk-reload)
+        reload_uringblk_driver
+        ;;
+    uringblk-test)
+        test_uringblk_driver
+        ;;
+    uringblk-benchmark)
+        benchmark_uringblk_driver
+        ;;
+    uringblk-status)
+        uringblk_driver_status
+        ;;
+    uringblk-stats)
+        uringblk_driver_stats
+        ;;
     test)
         run_tests
         ;;
@@ -500,15 +735,18 @@ log_success "Script completed successfully"
 if [ "$TARGET" = "configure" ]; then
     echo ""
     log_info "Next steps:"
-    log_info "  $0 build          # Build everything"
-    log_info "  $0 driver-load    # Load WAL driver"
-    log_info "  $0 driver-test    # Test WAL driver"
-    log_info "  $0 help-targets   # Show available targets"
+    log_info "  $0 build             # Build everything"
+    log_info "  $0 driver-load       # Load WAL driver"
+    log_info "  $0 driver-test       # Test WAL driver"
+    log_info "  $0 uringblk-load     # Load uringblk driver"
+    log_info "  $0 uringblk-test     # Test uringblk driver"
+    log_info "  $0 help-targets      # Show available targets"
 elif [ "$TARGET" = "build" ]; then
     echo ""
     log_info "Build completed. Next steps:"
-    log_info "  $0 driver-load    # Load WAL driver"
-    log_info "  $0 test           # Run tests"
-    log_info "  $0 install        # Install project"
+    log_info "  $0 driver-load       # Load WAL driver"
+    log_info "  $0 uringblk-load     # Load uringblk driver"
+    log_info "  $0 test              # Run tests"
+    log_info "  $0 install           # Install project"
 fi
 

@@ -8,7 +8,6 @@
 #include <linux/kernel.h>
 #include <linux/sysfs.h>
 #include <linux/device.h>
-#include <linux/genhd.h>
 #include <linux/blkdev.h>
 #include <linux/kobject.h>
 

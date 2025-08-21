@@ -88,11 +88,17 @@ include(cmake/DriverIntegration.cmake)
 integrate_wal_driver()
 
 # Generate configuration header after driver integration
-# Set HAVE_WAL_DRIVER for config.h generation
+# Set driver availability flags for config.h generation
 if(WAL_DRIVER_AVAILABLE)
     set(HAVE_WAL_DRIVER 1)
 else()
     set(HAVE_WAL_DRIVER 0)
+endif()
+
+if(URINGBLK_DRIVER_AVAILABLE)
+    set(HAVE_URINGBLK_DRIVER 1)
+else()
+    set(HAVE_URINGBLK_DRIVER 0)
 endif()
 
 configure_file(
@@ -123,13 +129,21 @@ target_include_directories(kvm_db PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
 )
 
-# If driver is available, add driver headers to include path
+# If drivers are available, add driver headers to include path
 if(WAL_DRIVER_AVAILABLE)
     target_include_directories(kvm_db PRIVATE
         "${WAL_DRIVER_BUILD_DIR}"
         "${CMAKE_CURRENT_SOURCE_DIR}/driver"
     )
     target_compile_definitions(kvm_db PRIVATE HAVE_WAL_DRIVER=1)
+endif()
+
+if(URINGBLK_DRIVER_AVAILABLE)
+    target_include_directories(kvm_db PRIVATE
+        "${URINGBLK_DRIVER_BUILD_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/driver"
+    )
+    target_compile_definitions(kvm_db PRIVATE HAVE_URINGBLK_DRIVER=1)
 endif()
 
 # Linux-specific libraries
@@ -149,6 +163,9 @@ if(NOT FILESYSTEM_NO_LINK_NEEDED)
     # Try linking with stdc++fs for older GCC versions
     target_link_libraries(kvm_db PRIVATE stdc++fs)
 endif()
+
+# Add driver dependencies if enabled by default
+add_driver_dependencies(kvm_db)
 
 # Add subdirectories if they exist
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests" AND CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
@@ -173,26 +190,50 @@ message(STATUS "  Install Prefix:         ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "  KVM Headers:            ${HAVE_LINUX_KVM_H}")
 if(WAL_DRIVER_AVAILABLE)
     message(STATUS "  WAL Driver:             ENABLED")
-    message(STATUS "  Driver Build Dir:       ${WAL_DRIVER_BUILD_DIR}")
-    message(STATUS "  Build Driver Default:   ${BUILD_DRIVER_BY_DEFAULT}")
-    message(STATUS "  Build Driver Tests:     ${BUILD_DRIVER_TESTS}")
+    message(STATUS "  WAL Build Dir:          ${WAL_DRIVER_BUILD_DIR}")
 else()
     message(STATUS "  WAL Driver:             DISABLED")
 endif()
+if(URINGBLK_DRIVER_AVAILABLE)
+    message(STATUS "  uringblk Driver:        ENABLED")
+    message(STATUS "  uringblk Build Dir:     ${URINGBLK_DRIVER_BUILD_DIR}")
+else()
+    message(STATUS "  uringblk Driver:        DISABLED")
+endif()
+message(STATUS "  Build Driver Default:   ${BUILD_DRIVER_BY_DEFAULT}")
+message(STATUS "  Build Driver Tests:     ${BUILD_DRIVER_TESTS}")
 message(STATUS "")
 
 # Help message for driver usage
-if(WAL_DRIVER_AVAILABLE)
-    message(STATUS "WAL Driver Build Targets:")
-    message(STATUS "  make wal_driver_build   - Build the kernel module")
-    message(STATUS "  make wal_driver_load    - Load the kernel module (requires sudo)")
-    message(STATUS "  make wal_driver_unload  - Unload the kernel module (requires sudo)")
-    message(STATUS "  make wal_driver_reload  - Reload the kernel module (requires sudo)")
-    message(STATUS "  make wal_driver_test    - Test the kernel module")
-    message(STATUS "  make wal_driver_install - Install the kernel module (requires sudo)")
-    if(TARGET wal_test)
-        message(STATUS "  make run_wal_test       - Run the driver test program")
+if(WAL_DRIVER_AVAILABLE OR URINGBLK_DRIVER_AVAILABLE)
+    message(STATUS "Driver Build Targets:")
+    
+    if(WAL_DRIVER_AVAILABLE)
+        message(STATUS "  WAL Driver:")
+        message(STATUS "    make wal_driver_build   - Build the WAL kernel module")
+        message(STATUS "    make wal_driver_load    - Load the WAL kernel module (requires sudo)")
+        message(STATUS "    make wal_driver_unload  - Unload the WAL kernel module (requires sudo)")
+        message(STATUS "    make wal_driver_reload  - Reload the WAL kernel module (requires sudo)")
+        message(STATUS "    make wal_driver_test    - Test the WAL kernel module")
+        message(STATUS "    make wal_driver_install - Install the WAL kernel module (requires sudo)")
+        if(TARGET wal_test)
+            message(STATUS "    make run_wal_test       - Run the WAL driver test program")
+        endif()
     endif()
+    
+    if(URINGBLK_DRIVER_AVAILABLE)
+        message(STATUS "  uringblk Driver:")
+        message(STATUS "    make uringblk_driver_build     - Build the uringblk kernel module")
+        message(STATUS "    make uringblk_driver_load      - Load the uringblk kernel module (requires sudo)")
+        message(STATUS "    make uringblk_driver_unload    - Unload the uringblk kernel module (requires sudo)")
+        message(STATUS "    make uringblk_driver_reload    - Reload the uringblk kernel module (requires sudo)")
+        message(STATUS "    make uringblk_driver_test      - Test the uringblk kernel module")
+        message(STATUS "    make uringblk_driver_benchmark - Benchmark the uringblk kernel module")
+        message(STATUS "    make uringblk_driver_status    - Check uringblk driver status")
+        message(STATUS "    make uringblk_driver_stats     - Show uringblk driver statistics")
+        message(STATUS "    make uringblk_driver_install   - Install the uringblk kernel module (requires sudo)")
+    endif()
+    
     message(STATUS "")
 endif()
 

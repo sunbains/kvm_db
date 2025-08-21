@@ -21,13 +21,20 @@
 #define HAVE_UNISTD_H 1
 #define HAVE_KVM_IOCTLS 1
 
-/* WAL Driver integration */
+/* Driver integration */
 #define HAVE_WAL_DRIVER 1
 #ifdef HAVE_WAL_DRIVER
     #define WAL_DRIVER_BUILD_DIR "/home/sunny/dev/kvm_db/build/driver"
     #define WAL_CHAR_DEVICE "/dev/rwal"
     #define WAL_BLOCK_DEVICE "/dev/wal"
     #define WAL_PROC_ENTRY "/proc/wal_driver"
+#endif
+
+#define HAVE_URINGBLK_DRIVER 1
+#ifdef HAVE_URINGBLK_DRIVER
+    #define URINGBLK_DRIVER_BUILD_DIR "/home/sunny/dev/kvm_db/build/driver/uringblk"
+    #define URINGBLK_DEVICE "/dev/uringblk0"
+    #define URINGBLK_SYSFS_PATH "/sys/block/uringblk0/uringblk"
 #endif
 
 /* C++23 features */
@@ -54,6 +61,12 @@
     #define KVM_DB_HAS_WAL_DRIVER 1
 #else
     #define KVM_DB_HAS_WAL_DRIVER 0
+#endif
+
+#if HAVE_URINGBLK_DRIVER
+    #define KVM_DB_HAS_URINGBLK_DRIVER 1
+#else
+    #define KVM_DB_HAS_URINGBLK_DRIVER 0
 #endif
 
 #if HAVE_LINUX_KVM_H && HAVE_KVM_IOCTLS
