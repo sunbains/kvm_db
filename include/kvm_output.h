@@ -1,6 +1,6 @@
 #pragma once
 
-#include <kvm_config.h>
+#include "kvm_db/config.h"
 
 #if USE_STD_PRINT
 #include <print>
@@ -14,37 +14,32 @@
 namespace kvm_db {
 
 // Modern C++23 print function with fallbacks
-template<typename... Args>
+template <typename... Args>
 void println(const std::string& fmt, Args&&... args) {
 #if USE_STD_PRINT
-    std::println(fmt, std::forward<Args>(args)...);
+  std::println(fmt, std::forward<Args>(args)...);
 #elif HAVE_STD_FORMAT
-    std::cout << std::format(fmt, std::forward<Args>(args)...) << '\\n';
+  std::cout << std::format(fmt, std::forward<Args>(args)...) << '\\n';
 #else
-    // Basic fallback - just print the format string
-    std::cout << fmt << '\\n';
+  // Basic fallback - just print the format string
+  std::cout << fmt << '\\n';
 #endif
 }
 
-template<typename... Args>  
+template <typename... Args>
 void print(const std::string& fmt, Args&&... args) {
 #if USE_STD_PRINT
-    std::print(fmt, std::forward<Args>(args)...);
+  std::print(fmt, std::forward<Args>(args)...);
 #elif HAVE_STD_FORMAT
-    std::cout << std::format(fmt, std::forward<Args>(args)...);
+  std::cout << std::format(fmt, std::forward<Args>(args)...);
 #else
-    std::cout << fmt;
+  std::cout << fmt;
 #endif
 }
 
 // Simple overloads for basic string output
-inline void println(const std::string& msg) {
-    std::cout << msg << '\\n';
-}
+inline void println(const std::string& msg) { std::cout << msg << '\\n'; }
 
-inline void print(const std::string& msg) {
-    std::cout << msg;
-}
+inline void print(const std::string& msg) { std::cout << msg; }
 
-} // namespace kvm_db_
-
+}  // namespace kvm_db

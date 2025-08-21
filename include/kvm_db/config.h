@@ -9,45 +9,45 @@
 #define KVM_DB_CONFIG_H
 
 /* Project information */
-#define KVM_DB_VERSION_MAJOR @KVMDB_VERSION_MAJOR@
-#define KVM_DB_VERSION_MINOR @KVMDB_VERSION_MINOR@
-#define KVM_DB_VERSION_PATCH @KVMDB_VERSION_PATCH@
-#define KVM_DB_VERSION "@KVMDB_VERSION@"
+#define KVM_DB_VERSION_MAJOR 
+#define KVM_DB_VERSION_MINOR 
+#define KVM_DB_VERSION_PATCH 
+#define KVM_DB_VERSION ""
 
 /* Platform detection */
-#cmakedefine01 HAVE_LINUX_KVM_H
-#cmakedefine01 HAVE_SYS_IOCTL_H
-#cmakedefine01 HAVE_FCNTL_H
-#cmakedefine01 HAVE_UNISTD_H
-#cmakedefine01 HAVE_KVM_IOCTLS
+#define HAVE_LINUX_KVM_H 1
+#define HAVE_SYS_IOCTL_H 1
+#define HAVE_FCNTL_H 1
+#define HAVE_UNISTD_H 1
+#define HAVE_KVM_IOCTLS 1
 
 /* WAL Driver integration */
-#cmakedefine01 HAVE_WAL_DRIVER
+#define HAVE_WAL_DRIVER 0
 #ifdef HAVE_WAL_DRIVER
-    #define WAL_DRIVER_BUILD_DIR "@WAL_DRIVER_BUILD_DIR@"
+    #define WAL_DRIVER_BUILD_DIR ""
     #define WAL_CHAR_DEVICE "/dev/rwal"
     #define WAL_BLOCK_DEVICE "/dev/wal"
     #define WAL_PROC_ENTRY "/proc/wal_driver"
 #endif
 
 /* C++23 features */
-#cmakedefine01 HAVE_CXX23_MODULES
-#cmakedefine01 HAVE_CXX23_RANGES
-#cmakedefine01 HAVE_CXX23_COROUTINES
-#cmakedefine01 HAVE_CXX23_CONCEPTS
+#define HAVE_CXX23_MODULES 0
+#define HAVE_CXX23_RANGES 1
+#define HAVE_CXX23_COROUTINES 1
+#define HAVE_CXX23_CONCEPTS 1
 
 /* Filesystem support */
-#cmakedefine01 FILESYSTEM_NO_LINK_NEEDED
+#define FILESYSTEM_NO_LINK_NEEDED 0
 
 /* Build configuration */
-#cmakedefine01 BUILD_DRIVER_BY_DEFAULT
-#cmakedefine01 BUILD_DRIVER_TESTS
+#define BUILD_DRIVER_BY_DEFAULT 0
+#define BUILD_DRIVER_TESTS 0
 
 /* System information */
-#define CMAKE_SYSTEM_NAME "@CMAKE_SYSTEM_NAME@"
-#define CMAKE_BUILD_TYPE "@CMAKE_BUILD_TYPE@"
-#define CMAKE_CXX_COMPILER_ID "@CMAKE_CXX_COMPILER_ID@"
-#define CMAKE_CXX_COMPILER_VERSION "@CMAKE_CXX_COMPILER_VERSION@"
+#define CMAKE_SYSTEM_NAME "Linux"
+#define CMAKE_BUILD_TYPE ""
+#define CMAKE_CXX_COMPILER_ID "GNU"
+#define CMAKE_CXX_COMPILER_VERSION "14.2.0"
 
 /* Helpful macros */
 #if HAVE_WAL_DRIVER

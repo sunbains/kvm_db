@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.25...3.30)
 
-project(KVMDb
+project(kvm_db
     VERSION 1.0.0
-    LANGUAGES CXX
+    LANGUAGES C CXX
     DESCRIPTION "C++23 KVM API capability probe using modern features"
 )
 
@@ -85,12 +85,21 @@ detect_cxx23_features()
 # Generate configuration header
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/config.h.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/include/kvm_db/config.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/kvm_db/config.h"
     @ONLY
 )
 
+# WAL Driver Integration
+# Include and integrate the WAL kernel driver build system
+include(cmake/DriverIntegration.cmake)
+integrate_wal_driver()
+
+# Option to control driver build behavior
+option(BUILD_DRIVER_BY_DEFAULT "Build kernel driver as part of default build" OFF)
+option(BUILD_DRIVER_TESTS "Build driver test programs" ON)
+
 # Main executable
-add_executable(kvm_db src/kvm_db.cc)
+add_executable(kvm_db src/kvm_db.cc src/kvm_probe.cc src/kvm_wal.cc)
 
 # Configure target properties
 target_compile_features(kvm_db PRIVATE cxx_std_23)
@@ -106,6 +115,15 @@ target_include_directories(kvm_db PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
 )
+
+# If driver is available, add driver headers to include path
+if(WAL_DRIVER_AVAILABLE)
+    target_include_directories(kvm_db PRIVATE
+        "${WAL_DRIVER_BUILD_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/driver"
+    )
+    target_compile_definitions(kvm_db PRIVATE HAVE_WAL_DRIVER=1)
+endif()
 
 # Linux-specific libraries
 target_link_libraries(kvm_db PRIVATE pthread)
@@ -137,4 +155,37 @@ endif()
 # Installation rules
 include(cmake/Installation.cmake)
 configure_installation()
+
+# Print build summary
+message(STATUS "")
+message(STATUS "kvm_db Build Configuration Summary:")
+message(STATUS "==================================")
+message(STATUS "  C++ Standard:           C++23")
+message(STATUS "  Build Type:             ${CMAKE_BUILD_TYPE}")
+message(STATUS "  Install Prefix:         ${CMAKE_INSTALL_PREFIX}")
+message(STATUS "  KVM Headers:            ${HAVE_LINUX_KVM_H}")
+if(WAL_DRIVER_AVAILABLE)
+    message(STATUS "  WAL Driver:             ENABLED")
+    message(STATUS "  Driver Build Dir:       ${WAL_DRIVER_BUILD_DIR}")
+    message(STATUS "  Build Driver Default:   ${BUILD_DRIVER_BY_DEFAULT}")
+    message(STATUS "  Build Driver Tests:     ${BUILD_DRIVER_TESTS}")
+else()
+    message(STATUS "  WAL Driver:             DISABLED")
+endif()
+message(STATUS "")
+
+# Help message for driver usage
+if(WAL_DRIVER_AVAILABLE)
+    message(STATUS "WAL Driver Build Targets:")
+    message(STATUS "  make wal_driver_build   - Build the kernel module")
+    message(STATUS "  make wal_driver_load    - Load the kernel module (requires sudo)")
+    message(STATUS "  make wal_driver_unload  - Unload the kernel module (requires sudo)")
+    message(STATUS "  make wal_driver_reload  - Reload the kernel module (requires sudo)")
+    message(STATUS "  make wal_driver_test    - Test the kernel module")
+    message(STATUS "  make wal_driver_install - Install the kernel module (requires sudo)")
+    if(TARGET wal_test)
+        message(STATUS "  make run_wal_test       - Run the driver test program")
+    endif()
+    message(STATUS "")
+endif()
 

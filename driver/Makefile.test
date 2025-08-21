@@ -1,0 +1,97 @@
+# Makefile for WAL Driver Test Program
+
+# Program name
+PROGRAM := wal_test
+
+# Source files
+SOURCES := wal_test.c
+
+# Compiler and flags
+CC := gcc
+CFLAGS := -Wall -Wextra -O2 -std=c99
+LDFLAGS := 
+
+# Header dependency
+HEADERS := wal_driver.h
+
+# Default target
+all: $(PROGRAM)
+
+# Build the test program
+$(PROGRAM): $(SOURCES) $(HEADERS)
+	@echo "Building WAL test program..."
+	$(CC) $(CFLAGS) -o $(PROGRAM) $(SOURCES) $(LDFLAGS)
+	@echo "Test program built successfully."
+
+# Clean build artifacts
+clean:
+	@echo "Cleaning test program..."
+	rm -f $(PROGRAM) *.o
+	@echo "Clean complete."
+
+# Install the test program
+install: $(PROGRAM)
+	@echo "Installing test program..."
+	sudo cp $(PROGRAM) /usr/local/bin/
+	sudo chmod 755 /usr/local/bin/$(PROGRAM)
+	@echo "Test program installed to /usr/local/bin/$(PROGRAM)"
+
+# Uninstall the test program
+uninstall:
+	@echo "Uninstalling test program..."
+	sudo rm -f /usr/local/bin/$(PROGRAM)
+	@echo "Test program uninstalled."
+
+# Run the test program (requires WAL driver to be loaded)
+test: $(PROGRAM)
+	@echo "Running WAL device tests..."
+	@if lsmod | grep -q wal_driver; then \
+		./$(PROGRAM); \
+	else \
+		echo "WAL driver module not loaded. Load it first with:"; \
+		echo "  sudo modprobe wal_driver"; \
+		echo "  or"; \
+		echo "  make -C ../driver load"; \
+	fi
+
+# Run specific tests
+test-char: $(PROGRAM)
+	@echo "Running character device test..."
+	./$(PROGRAM) -c
+
+test-block: $(PROGRAM)
+	@echo "Running block device test..."
+	./$(PROGRAM) -b
+
+test-ioctl: $(PROGRAM)
+	@echo "Running ioctl test..."
+	./$(PROGRAM) -i
+
+# Show device information
+info: $(PROGRAM)
+	@echo "Showing device information..."
+	./$(PROGRAM) -e
+
+# Help target
+help:
+	@echo "WAL Test Program Makefile"
+	@echo "========================="
+	@echo "Available targets:"
+	@echo "  all         - Build the test program"
+	@echo "  clean       - Clean build artifacts"
+	@echo "  install     - Install test program to /usr/local/bin/"
+	@echo "  uninstall   - Uninstall test program"
+	@echo "  test        - Run all tests"
+	@echo "  test-char   - Run character device test only"
+	@echo "  test-block  - Run block device test only"
+	@echo "  test-ioctl  - Run ioctl test only"
+	@echo "  info        - Show device information"
+	@echo "  help        - Show this help"
+	@echo ""
+	@echo "Usage examples:"
+	@echo "  make               # Build test program"
+	@echo "  make test          # Run all tests"
+	@echo "  make test-char     # Test character device only"
+	@echo "  make info          # Show device info"
+
+.PHONY: all clean install uninstall test test-char test-block test-ioctl info help
