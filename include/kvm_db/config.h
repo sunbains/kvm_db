@@ -40,12 +40,12 @@
 #define FILESYSTEM_NO_LINK_NEEDED 0
 
 /* Build configuration */
-#define BUILD_DRIVER_BY_DEFAULT 0
-#define BUILD_DRIVER_TESTS 0
+#define BUILD_DRIVER_BY_DEFAULT 1
+#define BUILD_DRIVER_TESTS 1
 
 /* System information */
 #define CMAKE_SYSTEM_NAME "Linux"
-#define CMAKE_BUILD_TYPE ""
+#define CMAKE_BUILD_TYPE "Release"
 #define CMAKE_CXX_COMPILER_ID "GNU"
 #define CMAKE_CXX_COMPILER_VERSION "14.2.0"
 
