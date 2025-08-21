@@ -273,23 +273,23 @@ test_driver() {
     
     cd "$BUILD_DIR"
     
-    # Check if driver is loaded
-    if ! lsmod | grep -q wal_driver; then
-        log_warning "WAL driver not loaded. Loading it first..."
-        if [ "$EUID" -ne 0 ]; then
-            sudo make wal_driver_load
-        else
-            make wal_driver_load
-        fi
-    fi
-    
     # Check if test program exists
     if [ ! -f "driver/wal_test" ]; then
         log_info "Test program not built. Building it first..."
         make wal_test
     fi
     
-    # Run tests
+    # Check if driver is already loaded and unload it
+    if lsmod | grep -q "wal_driver"; then
+        log_info "WAL driver already loaded, unloading first..."
+        if [ "$EUID" -ne 0 ]; then
+            sudo rmmod wal_driver || true
+        else
+            rmmod wal_driver || true
+        fi
+    fi
+    
+    # Run tests (driver loading is handled automatically by make dependencies)
     log_info "Running WAL driver tests..."
     make run_wal_test
     
