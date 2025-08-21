@@ -22,9 +22,9 @@
 #define HAVE_KVM_IOCTLS 1
 
 /* WAL Driver integration */
-#define HAVE_WAL_DRIVER 0
+#define HAVE_WAL_DRIVER 1
 #ifdef HAVE_WAL_DRIVER
-    #define WAL_DRIVER_BUILD_DIR ""
+    #define WAL_DRIVER_BUILD_DIR "/home/sunny/dev/kvm_db/build/driver"
     #define WAL_CHAR_DEVICE "/dev/rwal"
     #define WAL_BLOCK_DEVICE "/dev/wal"
     #define WAL_PROC_ENTRY "/proc/wal_driver"

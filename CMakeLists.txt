@@ -82,17 +82,24 @@ endif()
 include(cmake/CXX23Features.cmake)
 detect_cxx23_features()
 
-# Generate configuration header
+# WAL Driver Integration
+# Include and integrate the WAL kernel driver build system
+include(cmake/DriverIntegration.cmake)
+integrate_wal_driver()
+
+# Generate configuration header after driver integration
+# Set HAVE_WAL_DRIVER for config.h generation
+if(WAL_DRIVER_AVAILABLE)
+    set(HAVE_WAL_DRIVER 1)
+else()
+    set(HAVE_WAL_DRIVER 0)
+endif()
+
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/config.h.in"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/kvm_db/config.h"
     @ONLY
 )
-
-# WAL Driver Integration
-# Include and integrate the WAL kernel driver build system
-include(cmake/DriverIntegration.cmake)
-integrate_wal_driver()
 
 # Option to control driver build behavior
 option(BUILD_DRIVER_BY_DEFAULT "Build kernel driver as part of default build" OFF)

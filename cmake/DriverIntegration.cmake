@@ -217,6 +217,10 @@ function(add_kernel_driver)
     # Export variables for use in other CMake files
     set(WAL_DRIVER_AVAILABLE TRUE PARENT_SCOPE)
     set(WAL_DRIVER_BUILD_DIR "${DRIVER_BINARY_DIR}" PARENT_SCOPE)
+    
+    # Also set in cache so it persists
+    set(WAL_DRIVER_AVAILABLE TRUE CACHE BOOL "WAL driver is available" FORCE)
+    set(WAL_DRIVER_BUILD_DIR "${DRIVER_BINARY_DIR}" CACHE PATH "WAL driver build directory" FORCE)
 
     # Store the driver build option for later use
     set(BUILD_DRIVER_BY_DEFAULT_OPTION OFF CACHE BOOL "Build kernel driver as part of default build")
@@ -306,9 +310,14 @@ function(integrate_wal_driver)
         message(STATUS "")
         message(STATUS "Call add_driver_dependencies(kvm_db) after creating the main target")
         message(STATUS "to optionally build the driver as part of the default build.")
+        
+        # Propagate variables to parent scope
+        set(WAL_DRIVER_AVAILABLE TRUE PARENT_SCOPE)
+        set(WAL_DRIVER_BUILD_DIR "${WAL_DRIVER_BUILD_DIR}" PARENT_SCOPE)
     else()
         message(STATUS "WAL driver integration: DISABLED")
         message(STATUS "Install kernel headers to enable driver build")
+        set(WAL_DRIVER_AVAILABLE FALSE PARENT_SCOPE)
     endif()
 endfunction()
 
