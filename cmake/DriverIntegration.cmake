@@ -149,7 +149,7 @@ function(add_wal_driver)
         COPYONLY
     )
     configure_file(
-        "${DRIVER_SOURCE_DIR}/Makefile"
+        "${DRIVER_SOURCE_DIR}/Makefile.wal.bak"
         "${DRIVER_BINARY_DIR}/Makefile"
         COPYONLY
     )
