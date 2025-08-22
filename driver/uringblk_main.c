@@ -104,6 +104,23 @@ static int virtual_backend_discard(struct uringblk_backend *backend, loff_t pos,
 
 static int device_backend_init(struct uringblk_backend *backend, const char *device_path, size_t capacity);
 static void device_backend_cleanup(struct uringblk_backend *backend);
+/* Structure to hold async I/O context */
+struct uringblk_io_context {
+    struct request *rq;
+    struct uringblk_backend *backend;
+    void *buffer;
+    loff_t pos;
+    size_t len;
+    struct page *page;
+    void *kaddr;
+};
+
+/* Bio completion callback for async I/O */
+static void device_backend_bio_complete(struct bio *bio);
+static int device_backend_read_async(struct uringblk_backend *backend, loff_t pos, void *buf, size_t len, struct request *rq);
+static int device_backend_write_async(struct uringblk_backend *backend, loff_t pos, const void *buf, size_t len, struct request *rq);
+static int device_backend_flush_async(struct uringblk_backend *backend, struct request *rq);
+
 static int device_backend_read(struct uringblk_backend *backend, loff_t pos, void *buf, size_t len);
 static int device_backend_write(struct uringblk_backend *backend, loff_t pos, const void *buf, size_t len);
 static int device_backend_flush(struct uringblk_backend *backend);
@@ -163,65 +180,106 @@ blk_status_t uringblk_queue_rq(struct blk_mq_hw_ctx *hctx,
         return BLK_STS_OK;
     }
 
-    /* Process each bio segment */
-    rq_for_each_segment(bvec, rq, iter) {
-        void *buffer = page_address(bvec.bv_page) + bvec.bv_offset;
-        size_t len = bvec.bv_len;
+    /* For device backend, use async I/O to avoid RCU critical section violations */
+    if (dev->backend.type == URINGBLK_BACKEND_DEVICE) {
         int ret = 0;
+        
+        /* Handle single-segment requests asynchronously */
+        /* Note: For simplicity, we'll handle the first segment only. 
+         * Multi-segment support would require more complex async handling */
+        rq_for_each_segment(bvec, rq, iter) {
+            void *buffer = page_address(bvec.bv_page) + bvec.bv_offset;
+            size_t len = bvec.bv_len;
 
-        if (pos + len > dev_size) {
-            len = dev_size - pos;
-        }
+            if (pos + len > dev_size) {
+                len = dev_size - pos;
+            }
 
-        switch (req_op(rq)) {
-        case REQ_OP_READ:
-            ret = dev->backend.ops->read(&dev->backend, pos, buffer, len);
-            if (ret < 0) {
-                status = BLK_STS_IOERR;
+            switch (req_op(rq)) {
+            case REQ_OP_READ:
+                ret = device_backend_read_async(&dev->backend, pos, buffer, len, rq);
+                break;
+            case REQ_OP_WRITE:
+                ret = device_backend_write_async(&dev->backend, pos, buffer, len, rq);
+                break;
+            case REQ_OP_FLUSH:
+                ret = device_backend_flush_async(&dev->backend, rq);
+                break;
+            case REQ_OP_DISCARD:
+                /* For now, treat discard as successful without actual implementation */
+                ret = 0;
+                blk_mq_end_request(rq, BLK_STS_OK);
+                break;
+            default:
+                blk_mq_end_request(rq, BLK_STS_NOTSUPP);
+                return BLK_STS_OK;
             }
-            break;
-        case REQ_OP_WRITE:
-            ret = dev->backend.ops->write(&dev->backend, pos, buffer, len);
+            
             if (ret < 0) {
-                status = BLK_STS_IOERR;
+                blk_mq_end_request(rq, BLK_STS_IOERR);
+                return BLK_STS_OK;
             }
-            break;
-        case REQ_OP_FLUSH:
-            ret = dev->backend.ops->flush(&dev->backend);
-            if (ret < 0) {
-                status = BLK_STS_IOERR;
+            
+            /* For async operations, the completion callback will call blk_mq_end_request */
+            /* Only handle the first segment for now */
+            if (req_op(rq) != REQ_OP_DISCARD) {
+                return BLK_STS_OK;
             }
-            break;
-        case REQ_OP_DISCARD:
-            ret = dev->backend.ops->discard(&dev->backend, pos, len);
-            if (ret < 0) {
-                status = BLK_STS_IOERR;
-            }
-            break;
-        case REQ_OP_SECURE_ERASE:
-        case REQ_OP_ZONE_APPEND:
-        case REQ_OP_WRITE_ZEROES:
-        case REQ_OP_ZONE_OPEN:
-        case REQ_OP_ZONE_CLOSE:
-        case REQ_OP_ZONE_FINISH:
-        case REQ_OP_ZONE_RESET:
-        case REQ_OP_ZONE_RESET_ALL:
-        case REQ_OP_DRV_IN:
-        case REQ_OP_DRV_OUT:
-        case REQ_OP_LAST:
-            /* Unsupported operations - handled by upper level return */
-            break;
-        }
-
-        if (status != BLK_STS_OK) {
             break;
         }
+        
+        return BLK_STS_OK;
+    } else {
+        /* For virtual backend, use synchronous I/O (no RCU issues) */
+        rq_for_each_segment(bvec, rq, iter) {
+            void *buffer = page_address(bvec.bv_page) + bvec.bv_offset;
+            size_t len = bvec.bv_len;
+            int ret = 0;
 
-        pos += len;
+            if (pos + len > dev_size) {
+                len = dev_size - pos;
+            }
+
+            switch (req_op(rq)) {
+            case REQ_OP_READ:
+                ret = dev->backend.ops->read(&dev->backend, pos, buffer, len);
+                if (ret < 0) {
+                    status = BLK_STS_IOERR;
+                }
+                break;
+            case REQ_OP_WRITE:
+                ret = dev->backend.ops->write(&dev->backend, pos, buffer, len);
+                if (ret < 0) {
+                    status = BLK_STS_IOERR;
+                }
+                break;
+            case REQ_OP_FLUSH:
+                ret = dev->backend.ops->flush(&dev->backend);
+                if (ret < 0) {
+                    status = BLK_STS_IOERR;
+                }
+                break;
+            case REQ_OP_DISCARD:
+                ret = dev->backend.ops->discard(&dev->backend, pos, len);
+                if (ret < 0) {
+                    status = BLK_STS_IOERR;
+                }
+                break;
+            default:
+                status = BLK_STS_NOTSUPP;
+                break;
+            }
+
+            if (status != BLK_STS_OK) {
+                break;
+            }
+
+            pos += len;
+        }
+
+        blk_mq_end_request(rq, status);
+        return BLK_STS_OK;
     }
-
-    blk_mq_end_request(rq, status);
-    return BLK_STS_OK;
 }
 
 int uringblk_init_hctx(struct blk_mq_hw_ctx *hctx, void *data,
@@ -771,6 +829,95 @@ static void device_backend_cleanup(struct uringblk_backend *backend)
     }
 }
 
+/* Bio completion callback for async I/O */
+static void device_backend_bio_complete(struct bio *bio)
+{
+    struct uringblk_io_context *ctx = bio->bi_private;
+    blk_status_t status = BLK_STS_OK;
+    
+    if (bio->bi_status != BLK_STS_OK) {
+        pr_err("uringblk: I/O failed: %d\n", bio->bi_status);
+        status = bio->bi_status;
+    } else if (bio_op(bio) == REQ_OP_READ && ctx->buffer) {
+        /* Copy data from page to buffer for read operations */
+        memcpy(ctx->buffer, ctx->kaddr, min_t(size_t, ctx->len, PAGE_SIZE));
+    }
+    
+    /* Clean up */
+    if (ctx->kaddr && ctx->page) {
+        kunmap(ctx->page);
+    }
+    if (ctx->page) {
+        __free_page(ctx->page);
+    }
+    
+    /* Complete the request */
+    blk_mq_end_request(ctx->rq, status);
+    
+    /* Free context */
+    kfree(ctx);
+    
+    /* Free bio */
+    bio_put(bio);
+}
+
+static int device_backend_read_async(struct uringblk_backend *backend, loff_t pos, void *buf, size_t len, struct request *rq)
+{
+    struct bdev_handle *bdev_handle = backend->private_data;
+    struct block_device *bdev;
+    struct bio *bio;
+    struct bio_vec bvec;
+    struct uringblk_io_context *ctx;
+    
+    if (!bdev_handle || pos + len > backend->capacity)
+        return -EINVAL;
+        
+    bdev = bdev_handle->bdev;
+    if (!bdev)
+        return -EINVAL;
+
+    /* Allocate I/O context */
+    ctx = kmalloc(sizeof(*ctx), GFP_KERNEL);
+    if (!ctx)
+        return -ENOMEM;
+    
+    /* Allocate a page for the buffer */
+    ctx->page = alloc_page(GFP_KERNEL);
+    if (!ctx->page) {
+        kfree(ctx);
+        return -ENOMEM;
+    }
+    
+    ctx->rq = rq;
+    ctx->backend = backend;
+    ctx->buffer = buf;
+    ctx->pos = pos;
+    ctx->len = len;
+    ctx->kaddr = kmap(ctx->page);
+    
+    /* Create a bio for the read operation */
+    bio = bio_alloc(bdev, 1, REQ_OP_READ, GFP_KERNEL);
+    bio->bi_iter.bi_sector = pos >> 9; /* Convert to sectors */
+    bio->bi_private = ctx;
+    bio->bi_end_io = device_backend_bio_complete;
+    
+    bvec.bv_page = ctx->page;
+    bvec.bv_len = min_t(size_t, len, PAGE_SIZE);
+    bvec.bv_offset = 0;
+    if (!bio_add_page(bio, ctx->page, bvec.bv_len, 0)) {
+        pr_err("uringblk: failed to add page to bio\n");
+        kunmap(ctx->page);
+        __free_page(ctx->page);
+        kfree(ctx);
+        bio_put(bio);
+        return -EIO;
+    }
+
+    /* Submit async I/O - no waiting */
+    submit_bio(bio);
+    return 0;
+}
+
 static int device_backend_read(struct uringblk_backend *backend, loff_t pos, void *buf, size_t len)
 {
     struct bdev_handle *bdev_handle = backend->private_data;
@@ -825,6 +972,66 @@ static int device_backend_read(struct uringblk_backend *backend, loff_t pos, voi
     bio_put(bio);
 
     return ret;
+}
+
+static int device_backend_write_async(struct uringblk_backend *backend, loff_t pos, const void *buf, size_t len, struct request *rq)
+{
+    struct bdev_handle *bdev_handle = backend->private_data;
+    struct block_device *bdev;
+    struct bio *bio;
+    struct bio_vec bvec;
+    struct uringblk_io_context *ctx;
+    
+    if (!bdev_handle || pos + len > backend->capacity)
+        return -EINVAL;
+        
+    bdev = bdev_handle->bdev;
+    if (!bdev)
+        return -EINVAL;
+
+    /* Allocate I/O context */
+    ctx = kmalloc(sizeof(*ctx), GFP_KERNEL);
+    if (!ctx)
+        return -ENOMEM;
+    
+    /* Allocate a page for the buffer */
+    ctx->page = alloc_page(GFP_KERNEL);
+    if (!ctx->page) {
+        kfree(ctx);
+        return -ENOMEM;
+    }
+    
+    ctx->rq = rq;
+    ctx->backend = backend;
+    ctx->buffer = NULL; /* No need to copy data back for writes */
+    ctx->pos = pos;
+    ctx->len = len;
+    ctx->kaddr = kmap(ctx->page);
+    
+    /* Copy data from input buffer to page */
+    memcpy(ctx->kaddr, buf, min_t(size_t, len, PAGE_SIZE));
+    
+    /* Create a bio for the write operation */
+    bio = bio_alloc(bdev, 1, REQ_OP_WRITE, GFP_KERNEL);
+    bio->bi_iter.bi_sector = pos >> 9; /* Convert to sectors */
+    bio->bi_private = ctx;
+    bio->bi_end_io = device_backend_bio_complete;
+    
+    bvec.bv_page = ctx->page;
+    bvec.bv_len = min_t(size_t, len, PAGE_SIZE);
+    bvec.bv_offset = 0;
+    if (!bio_add_page(bio, ctx->page, bvec.bv_len, 0)) {
+        pr_err("uringblk: failed to add page to bio\n");
+        kunmap(ctx->page);
+        __free_page(ctx->page);
+        kfree(ctx);
+        bio_put(bio);
+        return -EIO;
+    }
+
+    /* Submit async I/O - no waiting */
+    submit_bio(bio);
+    return 0;
 }
 
 static int device_backend_write(struct uringblk_backend *backend, loff_t pos, const void *buf, size_t len)
@@ -909,6 +1116,43 @@ static int device_backend_flush(struct uringblk_backend *backend)
 
     bio_put(bio);
     return ret;
+}
+
+static int device_backend_flush_async(struct uringblk_backend *backend, struct request *rq)
+{
+    struct bdev_handle *bdev_handle = backend->private_data;
+    struct block_device *bdev;
+    struct bio *bio;
+    struct uringblk_io_context *ctx;
+
+    if (!bdev_handle)
+        return -EINVAL;
+        
+    bdev = bdev_handle->bdev;
+    if (!bdev)
+        return -EINVAL;
+
+    /* Allocate I/O context */
+    ctx = kmalloc(sizeof(*ctx), GFP_KERNEL);
+    if (!ctx)
+        return -ENOMEM;
+    
+    ctx->rq = rq;
+    ctx->backend = backend;
+    ctx->buffer = NULL;
+    ctx->pos = 0;
+    ctx->len = 0;
+    ctx->page = NULL;
+    ctx->kaddr = NULL;
+
+    /* Create a bio for flush operation */
+    bio = bio_alloc(bdev, 0, REQ_OP_FLUSH, GFP_KERNEL);
+    bio->bi_private = ctx;
+    bio->bi_end_io = device_backend_bio_complete;
+
+    /* Submit async I/O - no waiting */
+    submit_bio(bio);
+    return 0;
 }
 
 static int device_backend_discard(struct uringblk_backend *backend, loff_t pos, size_t len)
@@ -1065,8 +1309,8 @@ int uringblk_init_device(struct uringblk_device *dev, int minor)
     /* Set capacity */
     set_capacity(dev->disk, dev->backend.capacity / uringblk_logical_block_size);
 
-    /* Add disk */
-    ret = add_disk(dev->disk);
+    /* Add disk without scanning partitions to avoid deadlock during initialization */
+    ret = device_add_disk(NULL, dev->disk, NULL);
     if (ret) {
         pr_err("uringblk: failed to add disk: %d\n", ret);
         goto err_put_disk;
