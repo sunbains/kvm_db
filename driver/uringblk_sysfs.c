@@ -93,7 +93,7 @@ static ssize_t capacity_show(struct device *dev, struct device_attribute *attr,
     struct gendisk *disk = dev_to_disk(dev);
     struct uringblk_device *udev = disk->private_data;
     
-    return sprintf(buf, "%zu\n", udev->capacity);
+    return sprintf(buf, "%zu\n", udev->backend.capacity);
 }
 
 static ssize_t read_ops_show(struct device *dev, struct device_attribute *attr,

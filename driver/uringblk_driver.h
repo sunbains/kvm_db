@@ -127,6 +127,33 @@ struct uringblk_stats {
 
 #ifdef __KERNEL__
 
+/* Storage backend types */
+enum uringblk_backend_type {
+    URINGBLK_BACKEND_VIRTUAL = 0,  /* In-memory virtual storage */
+    URINGBLK_BACKEND_DEVICE = 1,   /* Real block device */
+};
+
+/* Forward declaration */
+struct uringblk_backend;
+
+/* Storage backend interface */
+struct uringblk_backend_ops {
+    int (*init)(struct uringblk_backend *backend, const char *device_path, size_t capacity);
+    void (*cleanup)(struct uringblk_backend *backend);
+    int (*read)(struct uringblk_backend *backend, loff_t pos, void *buf, size_t len);
+    int (*write)(struct uringblk_backend *backend, loff_t pos, const void *buf, size_t len);
+    int (*flush)(struct uringblk_backend *backend);
+    int (*discard)(struct uringblk_backend *backend, loff_t pos, size_t len);
+};
+
+struct uringblk_backend {
+    enum uringblk_backend_type type;
+    const struct uringblk_backend_ops *ops;
+    void *private_data;
+    size_t capacity;
+    struct mutex io_mutex;
+};
+
 /* Driver configuration */
 struct uringblk_config {
     unsigned int nr_hw_queues;
@@ -135,6 +162,8 @@ struct uringblk_config {
     bool enable_discard;
     bool write_cache;
     bool zoned_mode;
+    enum uringblk_backend_type backend_type;
+    char backend_device[256];
 };
 
 /* Per-device structure */
@@ -145,9 +174,8 @@ struct uringblk_device {
     struct uringblk_stats stats;
     spinlock_t stats_lock;
     
-    /* Virtual storage for simulation */
-    void *data;
-    size_t capacity;
+    /* Storage backend */
+    struct uringblk_backend backend;
     
     /* Features */
     u64 features;
@@ -201,6 +229,14 @@ extern unsigned int uringblk_nr_hw_queues;
 extern unsigned int uringblk_queue_depth;
 extern bool uringblk_enable_poll;
 extern bool uringblk_enable_discard;
+extern bool uringblk_write_cache;
+extern unsigned int uringblk_logical_block_size;
+extern unsigned int uringblk_capacity_mb;
+extern int uringblk_backend_type;
+extern char *uringblk_backend_device;
+extern bool uringblk_auto_detect_size;
+extern int uringblk_max_devices;
+extern char *uringblk_devices;
 
 /* Sysfs functions */
 int uringblk_sysfs_create(struct gendisk *disk);

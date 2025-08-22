@@ -22,6 +22,8 @@
 #include <linux/uaccess.h>
 #include <linux/io_uring.h>
 #include <linux/version.h>
+#include <linux/file.h>
+#include <linux/stat.h>
 
 #include "uringblk_driver.h"
 
@@ -32,41 +34,80 @@ MODULE_DESCRIPTION(URINGBLK_DRIVER_DESC);
 MODULE_VERSION(URINGBLK_DRIVER_VERSION);
 
 /* Module parameters */
-static unsigned int nr_hw_queues = URINGBLK_DEFAULT_NR_HW_QUEUES;
-module_param(nr_hw_queues, uint, 0644);
+unsigned int uringblk_nr_hw_queues = URINGBLK_DEFAULT_NR_HW_QUEUES;
+module_param_named(nr_hw_queues, uringblk_nr_hw_queues, uint, 0644);
 MODULE_PARM_DESC(nr_hw_queues, "Number of hardware queues (default: 4)");
 
-static unsigned int queue_depth = URINGBLK_DEFAULT_QUEUE_DEPTH;
-module_param(queue_depth, uint, 0644);
+unsigned int uringblk_queue_depth = URINGBLK_DEFAULT_QUEUE_DEPTH;
+module_param_named(queue_depth, uringblk_queue_depth, uint, 0644);
 MODULE_PARM_DESC(queue_depth, "Queue depth per hardware queue (default: 1024)");
 
-static bool enable_poll = true;
-module_param(enable_poll, bool, 0644);
+bool uringblk_enable_poll = true;
+module_param_named(enable_poll, uringblk_enable_poll, bool, 0644);
 MODULE_PARM_DESC(enable_poll, "Enable polling support (default: true)");
 
-static bool enable_discard = true;
-module_param(enable_discard, bool, 0644);
+bool uringblk_enable_discard = true;
+module_param_named(enable_discard, uringblk_enable_discard, bool, 0644);
 MODULE_PARM_DESC(enable_discard, "Enable discard/TRIM support (default: true)");
 
-static bool write_cache = true;
-module_param(write_cache, bool, 0644);
+bool uringblk_write_cache = true;
+module_param_named(write_cache, uringblk_write_cache, bool, 0644);
 MODULE_PARM_DESC(write_cache, "Enable write cache (default: true)");
 
-static unsigned int logical_block_size = 512;
-module_param(logical_block_size, uint, 0444);
+unsigned int uringblk_logical_block_size = 512;
+module_param_named(logical_block_size, uringblk_logical_block_size, uint, 0444);
 MODULE_PARM_DESC(logical_block_size, "Logical block size in bytes (default: 512)");
 
-static unsigned int capacity_mb = 1024;
-module_param(capacity_mb, uint, 0644);
+unsigned int uringblk_capacity_mb = 1024;
+module_param_named(capacity_mb, uringblk_capacity_mb, uint, 0644);
 MODULE_PARM_DESC(capacity_mb, "Device capacity in MB (default: 1024)");
+
+int uringblk_backend_type = URINGBLK_BACKEND_VIRTUAL;
+module_param_named(backend_type, uringblk_backend_type, int, 0644);
+MODULE_PARM_DESC(backend_type, "Backend type: 0=virtual, 1=device (default: 0)");
+
+char *uringblk_backend_device = "";
+module_param_named(backend_device, uringblk_backend_device, charp, 0644);
+MODULE_PARM_DESC(backend_device, "Backend device path (e.g., /dev/sda1) when backend_type=1");
+
+bool uringblk_auto_detect_size = true;
+module_param_named(auto_detect_size, uringblk_auto_detect_size, bool, 0644);
+MODULE_PARM_DESC(auto_detect_size, "Auto-detect device size for real block devices (default: true)");
+
+int uringblk_max_devices = 1;
+module_param_named(max_devices, uringblk_max_devices, int, 0444);
+MODULE_PARM_DESC(max_devices, "Maximum number of uringblk devices to create (default: 1)");
+
+char *uringblk_devices = "";
+module_param_named(devices, uringblk_devices, charp, 0644);
+MODULE_PARM_DESC(devices, "Comma-separated list of device paths (overrides backend_device)");
 
 /* Global state */
 static int uringblk_major = 0;
-static struct uringblk_device *uringblk_dev = NULL;
+static struct uringblk_device **uringblk_device_array = NULL;
+static int num_devices = 0;
 
 /* Forward declarations */
 int uringblk_init_device(struct uringblk_device *dev, int minor);
 void uringblk_cleanup_device(struct uringblk_device *dev);
+static int parse_device_list(const char *device_str, char ***device_paths, int *count);
+static void free_device_list(char **device_paths, int count);
+static int validate_backend_config(int backend_type, const char *device_path);
+
+/* Backend implementations */
+static int virtual_backend_init(struct uringblk_backend *backend, const char *device_path, size_t capacity);
+static void virtual_backend_cleanup(struct uringblk_backend *backend);
+static int virtual_backend_read(struct uringblk_backend *backend, loff_t pos, void *buf, size_t len);
+static int virtual_backend_write(struct uringblk_backend *backend, loff_t pos, const void *buf, size_t len);
+static int virtual_backend_flush(struct uringblk_backend *backend);
+static int virtual_backend_discard(struct uringblk_backend *backend, loff_t pos, size_t len);
+
+static int device_backend_init(struct uringblk_backend *backend, const char *device_path, size_t capacity);
+static void device_backend_cleanup(struct uringblk_backend *backend);
+static int device_backend_read(struct uringblk_backend *backend, loff_t pos, void *buf, size_t len);
+static int device_backend_write(struct uringblk_backend *backend, loff_t pos, const void *buf, size_t len);
+static int device_backend_flush(struct uringblk_backend *backend);
+static int device_backend_discard(struct uringblk_backend *backend, loff_t pos, size_t len);
 
 /*
  * Block device request queue operations
@@ -79,8 +120,8 @@ blk_status_t uringblk_queue_rq(struct blk_mq_hw_ctx *hctx,
     struct uringblk_device *dev = uq->dev;
     struct bio_vec bvec;
     struct req_iterator iter;
-    loff_t pos = blk_rq_pos(rq) * logical_block_size;
-    loff_t dev_size = dev->capacity;
+    loff_t pos = blk_rq_pos(rq) * uringblk_logical_block_size;
+    loff_t dev_size = dev->backend.capacity;
     unsigned long flags;
     blk_status_t status = BLK_STS_OK;
 
@@ -126,6 +167,7 @@ blk_status_t uringblk_queue_rq(struct blk_mq_hw_ctx *hctx,
     rq_for_each_segment(bvec, rq, iter) {
         void *buffer = page_address(bvec.bv_page) + bvec.bv_offset;
         size_t len = bvec.bv_len;
+        int ret = 0;
 
         if (pos + len > dev_size) {
             len = dev_size - pos;
@@ -133,23 +175,27 @@ blk_status_t uringblk_queue_rq(struct blk_mq_hw_ctx *hctx,
 
         switch (req_op(rq)) {
         case REQ_OP_READ:
-            if (dev->data && pos + len <= dev->capacity) {
-                memcpy(buffer, dev->data + pos, len);
-            } else {
-                memset(buffer, 0, len);
+            ret = dev->backend.ops->read(&dev->backend, pos, buffer, len);
+            if (ret < 0) {
+                status = BLK_STS_IOERR;
             }
             break;
         case REQ_OP_WRITE:
-            if (dev->data && pos + len <= dev->capacity) {
-                memcpy(dev->data + pos, buffer, len);
+            ret = dev->backend.ops->write(&dev->backend, pos, buffer, len);
+            if (ret < 0) {
+                status = BLK_STS_IOERR;
             }
             break;
         case REQ_OP_FLUSH:
-            /* Simulate flush - no-op for in-memory device */
+            ret = dev->backend.ops->flush(&dev->backend);
+            if (ret < 0) {
+                status = BLK_STS_IOERR;
+            }
             break;
         case REQ_OP_DISCARD:
-            if (dev->data && pos + len <= dev->capacity) {
-                memset(dev->data + pos, 0, len);
+            ret = dev->backend.ops->discard(&dev->backend, pos, len);
+            if (ret < 0) {
+                status = BLK_STS_IOERR;
             }
             break;
         case REQ_OP_SECURE_ERASE:
@@ -167,10 +213,14 @@ blk_status_t uringblk_queue_rq(struct blk_mq_hw_ctx *hctx,
             break;
         }
 
+        if (status != BLK_STS_OK) {
+            break;
+        }
+
         pos += len;
     }
 
-    blk_mq_end_request(rq, BLK_STS_OK);
+    blk_mq_end_request(rq, status);
     return BLK_STS_OK;
 }
 
@@ -213,6 +263,139 @@ static const struct blk_mq_ops uringblk_mq_ops = {
 };
 
 /*
+ * Helper functions for device configuration
+ */
+static int validate_backend_config(int backend_type, const char *device_path)
+{
+    switch (backend_type) {
+    case URINGBLK_BACKEND_VIRTUAL:
+        /* Virtual backend doesn't need device path */
+        return 0;
+    case URINGBLK_BACKEND_DEVICE:
+        if (!device_path || strlen(device_path) == 0) {
+            pr_err("uringblk: device backend requires a valid device path\n");
+            return -EINVAL;
+        }
+        if (strlen(device_path) >= 256) {
+            pr_err("uringblk: device path too long (max 255 chars)\n");
+            return -EINVAL;
+        }
+        return 0;
+    default:
+        pr_err("uringblk: invalid backend type: %d\n", backend_type);
+        return -EINVAL;
+    }
+}
+
+static int parse_device_list(const char *device_str, char ***device_paths, int *count)
+{
+    char *str_copy, *start, *end;
+    char **paths = NULL;
+    int num = 0, capacity = 0;
+    int ret = 0;
+    char *pos;
+
+    if (!device_str || strlen(device_str) == 0) {
+        *device_paths = NULL;
+        *count = 0;
+        return 0;
+    }
+
+    str_copy = kstrdup(device_str, GFP_KERNEL);
+    if (!str_copy)
+        return -ENOMEM;
+
+    /* Count devices first */
+    pos = str_copy;
+    while (*pos) {
+        if (*pos == ',')
+            num++;
+        pos++;
+    }
+    num++; /* Last device after final comma */
+
+    if (num == 0) {
+        kfree(str_copy);
+        *device_paths = NULL;
+        *count = 0;
+        return 0;
+    }
+
+    /* Allocate array */
+    paths = kmalloc_array(num, sizeof(char *), GFP_KERNEL);
+    if (!paths) {
+        kfree(str_copy);
+        return -ENOMEM;
+    }
+
+    /* Parse devices */
+    start = str_copy;
+    capacity = 0;
+    
+    while (*start && capacity < num) {
+        /* Find end of current device path */
+        end = start;
+        while (*end && *end != ',')
+            end++;
+            
+        /* Null terminate the device path */
+        if (*end == ',') {
+            *end = '\0';
+        }
+        
+        /* Trim leading whitespace */
+        while (*start == ' ' || *start == '\t')
+            start++;
+            
+        /* Trim trailing whitespace */
+        pos = start + strlen(start) - 1;
+        while (pos > start && (*pos == ' ' || *pos == '\t')) {
+            *pos = '\0';
+            pos--;
+        }
+        
+        if (strlen(start) > 0) {
+            paths[capacity] = kstrdup(start, GFP_KERNEL);
+            if (!paths[capacity]) {
+                ret = -ENOMEM;
+                goto error;
+            }
+            capacity++;
+        }
+        
+        /* Move to next device */
+        start = (*end == '\0') ? end : end + 1;
+    }
+
+    kfree(str_copy);
+    *device_paths = paths;
+    *count = capacity;
+    return 0;
+
+error:
+    while (capacity > 0) {
+        capacity--;
+        kfree(paths[capacity]);
+    }
+    kfree(paths);
+    kfree(str_copy);
+    return ret;
+}
+
+static void free_device_list(char **device_paths, int count)
+{
+    int i;
+    
+    if (!device_paths)
+        return;
+        
+    for (i = 0; i < count; i++) {
+        kfree(device_paths[i]);
+    }
+    kfree(device_paths);
+}
+
+/*
  * Block device file operations
  */
 int uringblk_open(struct gendisk *disk, blk_mode_t mode)
@@ -233,7 +416,7 @@ void uringblk_release(struct gendisk *disk)
 int uringblk_getgeo(struct block_device *bdev, struct hd_geometry *geo)
 {
     struct uringblk_device *dev = bdev->bd_disk->private_data;
-    u64 sectors = dev->capacity / logical_block_size;
+    u64 sectors = dev->backend.capacity / uringblk_logical_block_size;
 
     /* Create fake geometry */
     geo->cylinders = sectors / (16 * 63);
@@ -260,6 +443,27 @@ static const struct block_device_operations uringblk_fops = {
 };
 
 /*
+ * Backend operation tables
+ */
+static const struct uringblk_backend_ops virtual_backend_ops = {
+    .init = virtual_backend_init,
+    .cleanup = virtual_backend_cleanup,
+    .read = virtual_backend_read,
+    .write = virtual_backend_write,
+    .flush = virtual_backend_flush,
+    .discard = virtual_backend_discard,
+};
+
+static const struct uringblk_backend_ops device_backend_ops = {
+    .init = device_backend_init,
+    .cleanup = device_backend_cleanup,
+    .read = device_backend_read,
+    .write = device_backend_write,
+    .flush = device_backend_flush,
+    .discard = device_backend_discard,
+};
+
+/*
  * URING_CMD command handlers
  */
 int uringblk_cmd_identify(struct uringblk_device *dev, void __user *argp, u32 len)
@@ -272,16 +476,16 @@ int uringblk_cmd_identify(struct uringblk_device *dev, void __user *argp, u32 le
     memset(&id, 0, sizeof(id));
     strncpy(id.model, dev->model, sizeof(id.model) - 1);
     strncpy(id.firmware, dev->firmware, sizeof(id.firmware) - 1);
-    id.logical_block_size = logical_block_size;
-    id.physical_block_size = logical_block_size;
-    id.capacity_sectors = dev->capacity / logical_block_size;
+    id.logical_block_size = uringblk_logical_block_size;
+    id.physical_block_size = uringblk_logical_block_size;
+    id.capacity_sectors = dev->backend.capacity / uringblk_logical_block_size;
     id.features_bitmap = dev->features;
     id.queue_count = dev->config.nr_hw_queues;
     id.queue_depth = dev->config.queue_depth;
     id.max_segments = URINGBLK_MAX_SEGMENTS;
     id.max_segment_size = URINGBLK_MAX_SEGMENT_SIZE;
     id.dma_alignment = 4096;
-    id.io_min = logical_block_size;
+    id.io_min = uringblk_logical_block_size;
     id.io_opt = 64 * 1024;
 
     if (copy_to_user(argp, &id, sizeof(id)))
@@ -305,7 +509,7 @@ int uringblk_cmd_get_limits(struct uringblk_device *dev, void __user *argp, u32 
     limits.max_segments = URINGBLK_MAX_SEGMENTS;
     limits.max_segment_size = URINGBLK_MAX_SEGMENT_SIZE;
     limits.dma_alignment = 4096;
-    limits.io_min = logical_block_size;
+    limits.io_min = uringblk_logical_block_size;
     limits.io_opt = 64 * 1024;
 
     if (copy_to_user(argp, &limits, sizeof(limits)))
@@ -333,9 +537,9 @@ int uringblk_cmd_get_geometry(struct uringblk_device *dev, void __user *argp, u3
         return -EINVAL;
 
     memset(&geo, 0, sizeof(geo));
-    geo.capacity_sectors = dev->capacity / logical_block_size;
-    geo.logical_block_size = logical_block_size;
-    geo.physical_block_size = logical_block_size;
+    geo.capacity_sectors = dev->backend.capacity / uringblk_logical_block_size;
+    geo.logical_block_size = uringblk_logical_block_size;
+    geo.physical_block_size = uringblk_logical_block_size;
     geo.cylinders = geo.capacity_sectors / (16 * 63);
     geo.heads = 16;
     geo.sectors_per_track = 63;
@@ -365,6 +569,288 @@ int uringblk_cmd_get_stats(struct uringblk_device *dev, void __user *argp, u32 l
 }
 
 /*
+ * Virtual backend implementation
+ */
+static int virtual_backend_init(struct uringblk_backend *backend, const char *device_path, size_t capacity)
+{
+    void *data;
+
+    data = vzalloc(capacity);
+    if (!data)
+        return -ENOMEM;
+
+    backend->private_data = data;
+    backend->capacity = capacity;
+    backend->type = URINGBLK_BACKEND_VIRTUAL;
+    backend->ops = &virtual_backend_ops;
+    mutex_init(&backend->io_mutex);
+
+    return 0;
+}
+
+static void virtual_backend_cleanup(struct uringblk_backend *backend)
+{
+    if (backend->private_data) {
+        vfree(backend->private_data);
+        backend->private_data = NULL;
+    }
+}
+
+static int virtual_backend_read(struct uringblk_backend *backend, loff_t pos, void *buf, size_t len)
+{
+    void *data = backend->private_data;
+
+    if (!data || pos + len > backend->capacity)
+        return -EINVAL;
+
+    memcpy(buf, data + pos, len);
+    return 0;
+}
+
+static int virtual_backend_write(struct uringblk_backend *backend, loff_t pos, const void *buf, size_t len)
+{
+    void *data = backend->private_data;
+
+    if (!data || pos + len > backend->capacity)
+        return -EINVAL;
+
+    memcpy(data + pos, buf, len);
+    return 0;
+}
+
+static int virtual_backend_flush(struct uringblk_backend *backend)
+{
+    /* No-op for virtual backend */
+    return 0;
+}
+
+static int virtual_backend_discard(struct uringblk_backend *backend, loff_t pos, size_t len)
+{
+    void *data = backend->private_data;
+
+    if (!data || pos + len > backend->capacity)
+        return -EINVAL;
+
+    memset(data + pos, 0, len);
+    return 0;
+}
+
+/*
+ * Device backend implementation
+ */
+static int device_backend_init(struct uringblk_backend *backend, const char *device_path, size_t capacity)
+{
+    struct file *filp;
+    struct block_device *bdev;
+    loff_t device_size;
+    int ret;
+
+    if (!device_path || strlen(device_path) == 0)
+        return -EINVAL;
+
+    /* Verify path length */
+    if (strlen(device_path) >= PATH_MAX) {
+        pr_err("uringblk: device path too long: %s\n", device_path);
+        return -ENAMETOOLONG;
+    }
+
+    /* Try to open the device with read-write access */
+    filp = filp_open(device_path, O_RDWR | O_LARGEFILE, 0);
+    if (IS_ERR(filp)) {
+        ret = PTR_ERR(filp);
+        pr_err("uringblk: failed to open device %s: %d\n", device_path, ret);
+        
+        /* Provide more specific error information */
+        switch (ret) {
+        case -ENOENT:
+            pr_err("uringblk: device %s does not exist\n", device_path);
+            break;
+        case -EACCES:
+            pr_err("uringblk: permission denied for device %s\n", device_path);
+            break;
+        case -EROFS:
+            pr_err("uringblk: device %s is read-only\n", device_path);
+            break;
+        case -EBUSY:
+            pr_err("uringblk: device %s is busy or exclusively locked\n", device_path);
+            break;
+        default:
+            pr_err("uringblk: unable to access device %s\n", device_path);
+            break;
+        }
+        return ret;
+    }
+
+    /* Verify it's a block device */
+    if (!S_ISBLK(file_inode(filp)->i_mode)) {
+        pr_err("uringblk: %s is not a block device (mode: 0x%x)\n", 
+               device_path, file_inode(filp)->i_mode);
+        filp_close(filp, NULL);
+        return -ENOTBLK;
+    }
+
+    bdev = I_BDEV(file_inode(filp));
+    if (!bdev) {
+        pr_err("uringblk: failed to get block device for %s\n", device_path);
+        filp_close(filp, NULL);
+        return -EINVAL;
+    }
+
+    /* Get device size - use bdev_nr_bytes for kernel v6.8 compatibility */
+    device_size = bdev_nr_bytes(bdev);
+    
+    /* Fallback to traditional method if bdev_nr_bytes fails */
+    if (device_size == 0) {
+        sector_t sectors = bdev_nr_sectors(bdev);
+        if (sectors > 0) {
+            device_size = (loff_t)sectors * 512;
+        }
+        pr_debug("uringblk: using sectors method, size: %lld bytes\n", device_size);
+    } else {
+        pr_debug("uringblk: using bdev_nr_bytes method, size: %lld bytes\n", device_size);
+    }
+
+    /* Validate device accessibility and size */
+    if (device_size == 0) {
+        pr_err("uringblk: device %s has zero size\n", device_path);
+        filp_close(filp, NULL);
+        return -EINVAL;
+    }
+
+    /* Check if device supports read/write operations */
+    if (bdev_read_only(bdev)) {
+        pr_warn("uringblk: device %s is read-only, write operations will fail\n", device_path);
+    }
+
+    /* Auto-detect size or validate requested capacity */
+    if (uringblk_auto_detect_size || capacity == 0) {
+        capacity = device_size;
+        pr_info("uringblk: auto-detected device size: %lld bytes (%lld MB)\n", 
+                device_size, device_size / (1024 * 1024));
+    } else if (capacity > device_size) {
+        pr_warn("uringblk: requested capacity %zu exceeds device size %lld, using device size\n",
+                capacity, device_size);
+        capacity = device_size;
+    }
+
+    /* Test read access with a small operation */
+    {
+        char test_buf[512];
+        loff_t test_pos = 0;
+        ssize_t test_ret = kernel_read(filp, test_buf, sizeof(test_buf), &test_pos);
+        if (test_ret < 0) {
+            pr_err("uringblk: failed to test read from device %s: %zd\n", device_path, test_ret);
+            filp_close(filp, NULL);
+            return test_ret;
+        }
+        pr_debug("uringblk: device %s read test successful (%zd bytes)\n", device_path, test_ret);
+    }
+
+    backend->private_data = filp;
+    backend->capacity = capacity;
+    backend->type = URINGBLK_BACKEND_DEVICE;
+    backend->ops = &device_backend_ops;
+    mutex_init(&backend->io_mutex);
+
+    pr_info("uringblk: using device backend %s (capacity: %zu bytes, %zu MB)\n", 
+            device_path, capacity, capacity / (1024 * 1024));
+    return 0;
+}
+
+static void device_backend_cleanup(struct uringblk_backend *backend)
+{
+    struct file *filp = backend->private_data;
+
+    if (filp) {
+        filp_close(filp, NULL);
+        backend->private_data = NULL;
+    }
+}
+
+static int device_backend_read(struct uringblk_backend *backend, loff_t pos, void *buf, size_t len)
+{
+    struct file *filp = backend->private_data;
+    loff_t offset = pos;
+    ssize_t ret;
+
+    if (!filp || pos + len > backend->capacity)
+        return -EINVAL;
+
+    mutex_lock(&backend->io_mutex);
+    ret = kernel_read(filp, buf, len, &offset);
+    mutex_unlock(&backend->io_mutex);
+
+    if (ret != len) {
+        pr_err("uringblk: read failed at pos %lld, len %zu: %zd\n", pos, len, ret);
+        return ret < 0 ? ret : -EIO;
+    }
+
+    return 0;
+}
+
+static int device_backend_write(struct uringblk_backend *backend, loff_t pos, const void *buf, size_t len)
+{
+    struct file *filp = backend->private_data;
+    loff_t offset = pos;
+    ssize_t ret;
+
+    if (!filp || pos + len > backend->capacity)
+        return -EINVAL;
+
+    mutex_lock(&backend->io_mutex);
+    ret = kernel_write(filp, buf, len, &offset);
+    mutex_unlock(&backend->io_mutex);
+
+    if (ret != len) {
+        pr_err("uringblk: write failed at pos %lld, len %zu: %zd\n", pos, len, ret);
+        return ret < 0 ? ret : -EIO;
+    }
+
+    return 0;
+}
+
+static int device_backend_flush(struct uringblk_backend *backend)
+{
+    struct file *filp = backend->private_data;
+    int ret;
+
+    if (!filp)
+        return -EINVAL;
+
+    mutex_lock(&backend->io_mutex);
+    ret = vfs_fsync(filp, 0);
+    mutex_unlock(&backend->io_mutex);
+
+    if (ret) {
+        pr_err("uringblk: flush failed: %d\n", ret);
+    }
+
+    return ret;
+}
+
+static int device_backend_discard(struct uringblk_backend *backend, loff_t pos, size_t len)
+{
+    struct file *filp = backend->private_data;
+    struct block_device *bdev;
+    int ret;
+
+    if (!filp || pos + len > backend->capacity)
+        return -EINVAL;
+
+    bdev = I_BDEV(file_inode(filp));
+    
+    mutex_lock(&backend->io_mutex);
+    ret = blkdev_issue_discard(bdev, pos / 512, len / 512, GFP_KERNEL);
+    mutex_unlock(&backend->io_mutex);
+
+    if (ret) {
+        pr_err("uringblk: discard failed at pos %lld, len %zu: %d\n", pos, len, ret);
+    }
+
+    return ret;
+}
+
+/*
  * Device initialization and cleanup
  */
 int uringblk_init_device(struct uringblk_device *dev, int minor)
@@ -378,11 +864,13 @@ int uringblk_init_device(struct uringblk_device *dev, int minor)
     mutex_init(&dev->admin_mutex);
 
     /* Set up configuration */
-    dev->config.nr_hw_queues = nr_hw_queues;
-    dev->config.queue_depth = queue_depth;
-    dev->config.enable_poll = enable_poll;
-    dev->config.enable_discard = enable_discard;
-    dev->config.write_cache = write_cache;
+    dev->config.nr_hw_queues = uringblk_nr_hw_queues;
+    dev->config.queue_depth = uringblk_queue_depth;
+    dev->config.enable_poll = uringblk_enable_poll;
+    dev->config.enable_discard = uringblk_enable_discard;
+    dev->config.write_cache = uringblk_write_cache;
+    dev->config.backend_type = uringblk_backend_type;
+    strncpy(dev->config.backend_device, uringblk_backend_device, sizeof(dev->config.backend_device) - 1);
 
     /* Set up features */
     dev->features = URINGBLK_FEAT_FLUSH;
@@ -396,15 +884,36 @@ int uringblk_init_device(struct uringblk_device *dev, int minor)
     dev->features |= URINGBLK_FEAT_FUA;
 
     /* Set device info */
-    snprintf(dev->model, sizeof(dev->model), "uringblk Virtual Device");
+    if (dev->config.backend_type == URINGBLK_BACKEND_VIRTUAL) {
+        snprintf(dev->model, sizeof(dev->model), "uringblk Virtual Device");
+    } else {
+        snprintf(dev->model, sizeof(dev->model), "uringblk Device Backend");
+    }
     snprintf(dev->firmware, sizeof(dev->firmware), "v%s", URINGBLK_DRIVER_VERSION);
 
-    /* Allocate virtual storage */
-    dev->capacity = (size_t)capacity_mb * 1024 * 1024;
-    dev->data = vzalloc(dev->capacity);
-    if (!dev->data) {
-        pr_err("uringblk: failed to allocate device storage\n");
-        return -ENOMEM;
+    /* Validate backend configuration */
+    ret = validate_backend_config(dev->config.backend_type, dev->config.backend_device);
+    if (ret)
+        return ret;
+
+    /* Initialize storage backend */
+    switch (dev->config.backend_type) {
+    case URINGBLK_BACKEND_VIRTUAL:
+        ret = virtual_backend_init(&dev->backend, NULL, (size_t)uringblk_capacity_mb * 1024 * 1024);
+        break;
+    case URINGBLK_BACKEND_DEVICE:
+        /* For device backend, use auto-detected size or fallback to capacity_mb */
+        ret = device_backend_init(&dev->backend, dev->config.backend_device, 
+                                uringblk_auto_detect_size ? 0 : (size_t)uringblk_capacity_mb * 1024 * 1024);
+        break;
+    default:
+        pr_err("uringblk: invalid backend type: %d\n", dev->config.backend_type);
+        return -EINVAL;
+    }
+
+    if (ret) {
+        pr_err("uringblk: failed to initialize backend: %d\n", ret);
+        return ret;
     }
 
     /* Initialize tag set */
@@ -420,7 +929,7 @@ int uringblk_init_device(struct uringblk_device *dev, int minor)
     ret = blk_mq_alloc_tag_set(&dev->tag_set);
     if (ret) {
         pr_err("uringblk: failed to allocate tag set: %d\n", ret);
-        goto err_free_data;
+        goto err_cleanup_backend;
     }
 
     /* Allocate disk */
@@ -440,8 +949,8 @@ int uringblk_init_device(struct uringblk_device *dev, int minor)
              "%s%d", URINGBLK_DEVICE_NAME, minor);
 
     /* Set queue limits */
-    blk_queue_logical_block_size(dev->disk->queue, logical_block_size);
-    blk_queue_physical_block_size(dev->disk->queue, logical_block_size);
+    blk_queue_logical_block_size(dev->disk->queue, uringblk_logical_block_size);
+    blk_queue_physical_block_size(dev->disk->queue, uringblk_logical_block_size);
     blk_queue_max_hw_sectors(dev->disk->queue, 4096 * 2); /* 4MB */
     blk_queue_max_segments(dev->disk->queue, URINGBLK_MAX_SEGMENTS);
     blk_queue_max_segment_size(dev->disk->queue, URINGBLK_MAX_SEGMENT_SIZE);
@@ -456,7 +965,7 @@ int uringblk_init_device(struct uringblk_device *dev, int minor)
     }
 
     /* Set capacity */
-    set_capacity(dev->disk, dev->capacity / logical_block_size);
+    set_capacity(dev->disk, dev->backend.capacity / uringblk_logical_block_size);
 
     /* Add disk */
     ret = add_disk(dev->disk);
@@ -466,7 +975,7 @@ int uringblk_init_device(struct uringblk_device *dev, int minor)
     }
 
     pr_info("uringblk: created device %s (%zu MB)\n", 
-            dev->disk->disk_name, dev->capacity / (1024 * 1024));
+            dev->disk->disk_name, dev->backend.capacity / (1024 * 1024));
 
     return 0;
 
@@ -474,8 +983,8 @@ err_put_disk:
     put_disk(dev->disk);
 err_free_tag_set:
     blk_mq_free_tag_set(&dev->tag_set);
-err_free_data:
-    vfree(dev->data);
+err_cleanup_backend:
+    dev->backend.ops->cleanup(&dev->backend);
     return ret;
 }
 
@@ -488,8 +997,8 @@ void uringblk_cleanup_device(struct uringblk_device *dev)
     
     blk_mq_free_tag_set(&dev->tag_set);
     
-    if (dev->data) {
-        vfree(dev->data);
+    if (dev->backend.ops) {
+        dev->backend.ops->cleanup(&dev->backend);
     }
 }
 
@@ -498,7 +1007,9 @@ void uringblk_cleanup_device(struct uringblk_device *dev)
  */
 static int __init uringblk_init(void)
 {
-    int ret;
+    int ret, i;
+    char **device_paths = NULL;
+    int device_count = 0;
 
     pr_info("uringblk: Loading io_uring-first block driver v%s\n", 
             URINGBLK_DRIVER_VERSION);
@@ -510,26 +1021,107 @@ static int __init uringblk_init(void)
         return uringblk_major;
     }
 
-    /* Allocate device structure */
-    uringblk_dev = kzalloc(sizeof(*uringblk_dev), GFP_KERNEL);
-    if (!uringblk_dev) {
+    /* Parse device list if provided */
+    if (strlen(uringblk_devices) > 0) {
+        ret = parse_device_list(uringblk_devices, &device_paths, &device_count);
+        if (ret) {
+            pr_err("uringblk: failed to parse device list: %d\n", ret);
+            goto err_unregister;
+        }
+        
+        if (device_count > uringblk_max_devices) {
+            pr_warn("uringblk: device list contains %d devices, limiting to %d\n", 
+                    device_count, uringblk_max_devices);
+            device_count = uringblk_max_devices;
+        }
+        
+        if (device_count > 0 && uringblk_backend_type == URINGBLK_BACKEND_VIRTUAL) {
+            pr_info("uringblk: device list provided, switching to device backend\n");
+            uringblk_backend_type = URINGBLK_BACKEND_DEVICE;
+        }
+    } else if (uringblk_backend_type == URINGBLK_BACKEND_DEVICE && strlen(uringblk_backend_device) > 0) {
+        /* Single device mode */
+        device_count = 1;
+        device_paths = kmalloc_array(1, sizeof(char *), GFP_KERNEL);
+        if (!device_paths) {
+            ret = -ENOMEM;
+            goto err_unregister;
+        }
+        device_paths[0] = kstrdup(uringblk_backend_device, GFP_KERNEL);
+        if (!device_paths[0]) {
+            kfree(device_paths);
+            ret = -ENOMEM;
+            goto err_unregister;
+        }
+    } else {
+        /* Virtual backend or default single device */
+        device_count = 1;
+    }
+
+    /* Validate device count */
+    if (device_count <= 0) {
+        device_count = 1;
+    }
+    if (device_count > uringblk_max_devices) {
+        device_count = uringblk_max_devices;
+    }
+
+    /* Allocate device array */
+    uringblk_device_array = kmalloc_array(device_count, sizeof(struct uringblk_device *), GFP_KERNEL);
+    if (!uringblk_device_array) {
         ret = -ENOMEM;
-        goto err_unregister;
+        goto err_free_paths;
     }
 
-    /* Initialize device */
-    ret = uringblk_init_device(uringblk_dev, 0);
-    if (ret) {
-        pr_err("uringblk: failed to initialize device: %d\n", ret);
-        goto err_free_dev;
+    /* Initialize devices */
+    for (i = 0; i < device_count; i++) {
+        uringblk_device_array[i] = kzalloc(sizeof(struct uringblk_device), GFP_KERNEL);
+        if (!uringblk_device_array[i]) {
+            ret = -ENOMEM;
+            goto err_cleanup_devices;
+        }
+
+        /* Configure device-specific backend */
+        if (device_paths && i < device_count) {
+            uringblk_device_array[i]->config.backend_type = URINGBLK_BACKEND_DEVICE;
+            strncpy(uringblk_device_array[i]->config.backend_device, device_paths[i], 
+                   sizeof(uringblk_device_array[i]->config.backend_device) - 1);
+        } else {
+            uringblk_device_array[i]->config.backend_type = uringblk_backend_type;
+            strncpy(uringblk_device_array[i]->config.backend_device, uringblk_backend_device, 
+                   sizeof(uringblk_device_array[i]->config.backend_device) - 1);
+        }
+
+        ret = uringblk_init_device(uringblk_device_array[i], i);
+        if (ret) {
+            pr_err("uringblk: failed to initialize device %d: %d\n", i, ret);
+            kfree(uringblk_device_array[i]);
+            uringblk_device_array[i] = NULL;
+            goto err_cleanup_devices;
+        }
+        num_devices++;
     }
 
-    pr_info("uringblk: driver loaded successfully (major=%d)\n", uringblk_major);
+    free_device_list(device_paths, device_count);
+    
+    pr_info("uringblk: driver loaded successfully (major=%d, %d devices)\n", 
+            uringblk_major, num_devices);
     return 0;
 
-err_free_dev:
-    kfree(uringblk_dev);
-    uringblk_dev = NULL;
+err_cleanup_devices:
+    for (i = 0; i < device_count; i++) {
+        if (uringblk_device_array[i]) {
+            if (i < num_devices) {
+                uringblk_cleanup_device(uringblk_device_array[i]);
+            }
+            kfree(uringblk_device_array[i]);
+        }
+    }
+    kfree(uringblk_device_array);
+    uringblk_device_array = NULL;
+    num_devices = 0;
+err_free_paths:
+    free_device_list(device_paths, device_count);
 err_unregister:
     unregister_blkdev(uringblk_major, URINGBLK_DEVICE_NAME);
     return ret;
@@ -537,17 +1129,25 @@ err_unregister:
 
 static void __exit uringblk_exit(void)
 {
+    int i;
+    
     pr_info("uringblk: Unloading driver\n");
 
-    if (uringblk_dev) {
-        uringblk_cleanup_device(uringblk_dev);
-        kfree(uringblk_dev);
-        uringblk_dev = NULL;
+    if (uringblk_device_array) {
+        for (i = 0; i < num_devices; i++) {
+            if (uringblk_device_array[i]) {
+                uringblk_cleanup_device(uringblk_device_array[i]);
+                kfree(uringblk_device_array[i]);
+            }
+        }
+        kfree(uringblk_device_array);
+        uringblk_device_array = NULL;
     }
 
     unregister_blkdev(uringblk_major, URINGBLK_DEVICE_NAME);
 
-    pr_info("uringblk: driver unloaded\n");
+    pr_info("uringblk: driver unloaded (%d devices)\n", num_devices);
+    num_devices = 0;
 }
 
 module_init(uringblk_init);
