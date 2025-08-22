@@ -16,22 +16,22 @@ namespace kvm_db {
 // Modern C++23 print function with fallbacks
 #if USE_STD_PRINT
 template <typename... Args>
-void println(const std::string& fmt, Args&&... args) {
+void println(std::format_string<Args...> fmt, Args&&... args) {
   std::println(fmt, std::forward<Args>(args)...);
 }
 
 template <typename... Args>
-void print(const std::string& fmt, Args&&... args) {
+void print(std::format_string<Args...> fmt, Args&&... args) {
   std::print(fmt, std::forward<Args>(args)...);
 }
 #elif HAVE_STD_FORMAT
 template <typename... Args>
-void println(const std::string& fmt, Args&&... args) {
+void println(std::format_string<Args...> fmt, Args&&... args) {
   std::cout << std::format(fmt, std::forward<Args>(args)...) << '\n';
 }
 
 template <typename... Args>
-void print(const std::string& fmt, Args&&... args) {
+void print(std::format_string<Args...> fmt, Args&&... args) {
   std::cout << std::format(fmt, std::forward<Args>(args)...);
 }
 #else

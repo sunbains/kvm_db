@@ -112,10 +112,13 @@ option(BUILD_DRIVER_BY_DEFAULT "Build kernel driver as part of default build" OF
 option(BUILD_DRIVER_TESTS "Build driver test programs" ON)
 
 # Main executable
-add_executable(kvm_db src/kvm_db.cc src/kvm_probe.cc src/kvm_wal.cc)
+add_executable(kvm_db src/kvm_db.cc src/kvm_probe.cc src/kvm_wal.cc src/kvm_uringblk.cc)
 
 # Configure target properties
 target_compile_features(kvm_db PRIVATE cxx_std_23)
+
+# Configure C++23 features and flags
+configure_cxx23_flags(kvm_db)
 
 # Link to our interface libraries
 target_link_libraries(kvm_db PRIVATE

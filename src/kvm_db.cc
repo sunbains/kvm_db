@@ -17,6 +17,7 @@
 #include "kvm_db/config.h"
 #include "kvm_probe.h"
 #include "kvm_wal.h"
+#include "kvm_uringblk.h"
 
 using namespace kvm_db;
 
@@ -76,8 +77,36 @@ int main() {
     // Devices will be closed automatically via RAII
   }
 
+#if HAVE_URINGBLK_DRIVER
+  println("\n=== Testing uringblk Driver Interface ===");
+
+  UringBlkManager uringblk_manager;
+  
+  // Check if uringblk driver is loaded
+  if (auto driver_loaded = uringblk_manager.is_driver_loaded(); driver_loaded && *driver_loaded) {
+    println("uringblk driver is loaded");
+    
+    if (auto version = uringblk_manager.get_driver_version(); version) {
+      println("Driver version: {}", *version);
+    }
+    
+    // Test all available uringblk devices
+    if (auto test_result = uringblk_manager.test_all_devices(); !test_result) {
+      println("uringblk device testing failed: {}", test_result.error().message());
+    }
+  } else {
+    println("uringblk driver is not loaded");
+    println("To load the driver, run: sudo make uringblk_driver_load");
+    println("Note: This requires the uringblk kernel module to be built first");
+  }
+#else
+  println("\n=== uringblk Driver Support ===");
+  println("uringblk driver support is not compiled in");
+  println("Rebuild with HAVE_URINGBLK_DRIVER=1 to enable uringblk support");
+#endif
+
   // Device cleanup happens automatically via RAII when wal_manager goes out of scope
-  println("Shutdown: WAL devices will be cleaned up automatically...");
+  println("\nShutdown: WAL devices will be cleaned up automatically...");
 
   return EXIT_SUCCESS;
 }
