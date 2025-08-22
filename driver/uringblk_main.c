@@ -267,22 +267,27 @@ static const struct blk_mq_ops uringblk_mq_ops = {
  */
 static int validate_backend_config(int backend_type, const char *device_path)
 {
+    pr_info("uringblk: DEBUG - validate_backend_config: type=%d, path='%s'\n", 
+            backend_type, device_path ? device_path : "(null)");
+            
     switch (backend_type) {
     case URINGBLK_BACKEND_VIRTUAL:
         /* Virtual backend doesn't need device path */
+        pr_info("uringblk: DEBUG - Virtual backend validation passed\n");
         return 0;
     case URINGBLK_BACKEND_DEVICE:
         if (!device_path || strlen(device_path) == 0) {
-            pr_err("uringblk: device backend requires a valid device path\n");
+            pr_err("uringblk: DEBUG - device backend requires a valid device path\n");
             return -EINVAL;
         }
         if (strlen(device_path) >= 256) {
-            pr_err("uringblk: device path too long (max 255 chars)\n");
+            pr_err("uringblk: DEBUG - device path too long (max 255 chars): len=%zu\n", strlen(device_path));
             return -EINVAL;
         }
+        pr_info("uringblk: DEBUG - Device backend validation passed for path '%s'\n", device_path);
         return 0;
     default:
-        pr_err("uringblk: invalid backend type: %d\n", backend_type);
+        pr_err("uringblk: DEBUG - invalid backend type: %d\n", backend_type);
         return -EINVAL;
     }
 }
@@ -575,9 +580,25 @@ static int virtual_backend_init(struct uringblk_backend *backend, const char *de
 {
     void *data;
 
+    pr_info("uringblk: DEBUG - virtual_backend_init called with capacity=%zu bytes", capacity);
+    
+    if (capacity == 0) {
+        pr_err("uringblk: DEBUG - virtual backend capacity cannot be zero");
+        return -EINVAL;
+    }
+    
+    if (capacity > SIZE_MAX) {
+        pr_err("uringblk: DEBUG - virtual backend capacity too large: %zu", capacity);
+        return -EINVAL;
+    }
+    
+    pr_info("uringblk: DEBUG - allocating %zu bytes of virtual memory", capacity);
     data = vzalloc(capacity);
-    if (!data)
+    if (!data) {
+        pr_err("uringblk: DEBUG - failed to allocate %zu bytes for virtual backend", capacity);
         return -ENOMEM;
+    }
+    pr_info("uringblk: DEBUG - virtual memory allocation successful");
 
     backend->private_data = data;
     backend->capacity = capacity;
@@ -640,25 +661,33 @@ static int virtual_backend_discard(struct uringblk_backend *backend, loff_t pos,
  */
 static int device_backend_init(struct uringblk_backend *backend, const char *device_path, size_t capacity)
 {
-    struct file *filp;
+    struct bdev_handle *bdev_handle;
     struct block_device *bdev;
     loff_t device_size;
     int ret;
 
-    if (!device_path || strlen(device_path) == 0)
+    pr_info("uringblk: DEBUG - device_backend_init called with path='%s', capacity=%zu\n", 
+            device_path ? device_path : "(null)", capacity);
+
+    if (!device_path || strlen(device_path) == 0) {
+        pr_err("uringblk: DEBUG - device path is null or empty\n");
         return -EINVAL;
+    }
 
     /* Verify path length */
     if (strlen(device_path) >= PATH_MAX) {
-        pr_err("uringblk: device path too long: %s\n", device_path);
+        pr_err("uringblk: DEBUG - device path too long: %s (len=%zu, max=%d)\n", 
+               device_path, strlen(device_path), PATH_MAX);
         return -ENAMETOOLONG;
     }
+    
+    pr_info("uringblk: DEBUG - attempting to open block device: %s\n", device_path);
 
-    /* Try to open the device with read-write access */
-    filp = filp_open(device_path, O_RDWR | O_LARGEFILE, 0);
-    if (IS_ERR(filp)) {
-        ret = PTR_ERR(filp);
-        pr_err("uringblk: failed to open device %s: %d\n", device_path, ret);
+    /* Use bdev_open_by_path for proper block device access in kernel 6.8 */
+    bdev_handle = bdev_open_by_path(device_path, BLK_OPEN_READ | BLK_OPEN_WRITE, NULL, NULL);
+    if (IS_ERR(bdev_handle)) {
+        ret = PTR_ERR(bdev_handle);
+        pr_err("uringblk: DEBUG - failed to open block device %s: %d\n", device_path, ret);
         
         /* Provide more specific error information */
         switch (ret) {
@@ -680,26 +709,14 @@ static int device_backend_init(struct uringblk_backend *backend, const char *dev
         }
         return ret;
     }
+    
+    bdev = bdev_handle->bdev;
+    pr_info("uringblk: DEBUG - successfully opened block device: %s\n", device_path);
 
-    /* Verify it's a block device */
-    if (!S_ISBLK(file_inode(filp)->i_mode)) {
-        pr_err("uringblk: %s is not a block device (mode: 0x%x)\n", 
-               device_path, file_inode(filp)->i_mode);
-        filp_close(filp, NULL);
-        return -ENOTBLK;
-    }
-
-    bdev = I_BDEV(file_inode(filp));
-    if (!bdev) {
-        pr_err("uringblk: failed to get block device for %s\n", device_path);
-        filp_close(filp, NULL);
-        return -EINVAL;
-    }
-
-    /* Get device size - use bdev_nr_bytes for kernel v6.8 compatibility */
+    /* Get device size using proper kernel 6.8 API */
     device_size = bdev_nr_bytes(bdev);
     
-    /* Fallback to traditional method if bdev_nr_bytes fails */
+    /* Fallback to traditional method if needed */
     if (device_size == 0) {
         sector_t sectors = bdev_nr_sectors(bdev);
         if (sectors > 0) {
@@ -713,7 +730,7 @@ static int device_backend_init(struct uringblk_backend *backend, const char *dev
     /* Validate device accessibility and size */
     if (device_size == 0) {
         pr_err("uringblk: device %s has zero size\n", device_path);
-        filp_close(filp, NULL);
+        bdev_release(bdev_handle);
         return -EINVAL;
     }
 
@@ -733,20 +750,7 @@ static int device_backend_init(struct uringblk_backend *backend, const char *dev
         capacity = device_size;
     }
 
-    /* Test read access with a small operation */
-    {
-        char test_buf[512];
-        loff_t test_pos = 0;
-        ssize_t test_ret = kernel_read(filp, test_buf, sizeof(test_buf), &test_pos);
-        if (test_ret < 0) {
-            pr_err("uringblk: failed to test read from device %s: %zd\n", device_path, test_ret);
-            filp_close(filp, NULL);
-            return test_ret;
-        }
-        pr_debug("uringblk: device %s read test successful (%zd bytes)\n", device_path, test_ret);
-    }
-
-    backend->private_data = filp;
+    backend->private_data = bdev_handle;
     backend->capacity = capacity;
     backend->type = URINGBLK_BACKEND_DEVICE;
     backend->ops = &device_backend_ops;
@@ -759,85 +763,166 @@ static int device_backend_init(struct uringblk_backend *backend, const char *dev
 
 static void device_backend_cleanup(struct uringblk_backend *backend)
 {
-    struct file *filp = backend->private_data;
+    struct bdev_handle *bdev_handle = backend->private_data;
 
-    if (filp) {
-        filp_close(filp, NULL);
+    if (bdev_handle) {
+        bdev_release(bdev_handle);
         backend->private_data = NULL;
     }
 }
 
 static int device_backend_read(struct uringblk_backend *backend, loff_t pos, void *buf, size_t len)
 {
-    struct file *filp = backend->private_data;
-    loff_t offset = pos;
-    ssize_t ret;
+    struct bdev_handle *bdev_handle = backend->private_data;
+    struct block_device *bdev;
+    struct bio *bio;
+    struct bio_vec bvec;
+    struct page *page;
+    void *kaddr;
+    int ret = 0;
 
-    if (!filp || pos + len > backend->capacity)
+    if (!bdev_handle || pos + len > backend->capacity)
+        return -EINVAL;
+        
+    bdev = bdev_handle->bdev;
+    if (!bdev)
         return -EINVAL;
 
-    mutex_lock(&backend->io_mutex);
-    ret = kernel_read(filp, buf, len, &offset);
-    mutex_unlock(&backend->io_mutex);
+    /* Allocate a page for the buffer */
+    page = alloc_page(GFP_KERNEL);
+    if (!page)
+        return -ENOMEM;
 
-    if (ret != len) {
-        pr_err("uringblk: read failed at pos %lld, len %zu: %zd\n", pos, len, ret);
-        return ret < 0 ? ret : -EIO;
+    kaddr = kmap(page);
+    
+    /* Create a bio for the read operation */
+    bio = bio_alloc(bdev, 1, REQ_OP_READ, GFP_KERNEL);
+    bio->bi_iter.bi_sector = pos >> 9; /* Convert to sectors */
+    
+    bvec.bv_page = page;
+    bvec.bv_len = min_t(size_t, len, PAGE_SIZE);
+    bvec.bv_offset = 0;
+    if (!bio_add_page(bio, page, bvec.bv_len, 0)) {
+        pr_err("uringblk: failed to add page to bio\n");
+        kunmap(page);
+        __free_page(page);
+        bio_put(bio);
+        return -EIO;
     }
 
-    return 0;
+    mutex_lock(&backend->io_mutex);
+    ret = submit_bio_wait(bio);
+    mutex_unlock(&backend->io_mutex);
+
+    if (ret == 0) {
+        memcpy(buf, kaddr, min_t(size_t, len, PAGE_SIZE));
+    } else {
+        pr_err("uringblk: read failed at pos %lld, len %zu: %d\n", pos, len, ret);
+    }
+
+    kunmap(page);
+    __free_page(page);
+    bio_put(bio);
+
+    return ret;
 }
 
 static int device_backend_write(struct uringblk_backend *backend, loff_t pos, const void *buf, size_t len)
 {
-    struct file *filp = backend->private_data;
-    loff_t offset = pos;
-    ssize_t ret;
+    struct bdev_handle *bdev_handle = backend->private_data;
+    struct block_device *bdev;
+    struct bio *bio;
+    struct bio_vec bvec;
+    struct page *page;
+    void *kaddr;
+    int ret = 0;
 
-    if (!filp || pos + len > backend->capacity)
+    if (!bdev_handle || pos + len > backend->capacity)
+        return -EINVAL;
+        
+    bdev = bdev_handle->bdev;
+    if (!bdev)
         return -EINVAL;
 
-    mutex_lock(&backend->io_mutex);
-    ret = kernel_write(filp, buf, len, &offset);
-    mutex_unlock(&backend->io_mutex);
+    /* Allocate a page for the buffer */
+    page = alloc_page(GFP_KERNEL);
+    if (!page)
+        return -ENOMEM;
 
-    if (ret != len) {
-        pr_err("uringblk: write failed at pos %lld, len %zu: %zd\n", pos, len, ret);
-        return ret < 0 ? ret : -EIO;
+    kaddr = kmap(page);
+    memcpy(kaddr, buf, min_t(size_t, len, PAGE_SIZE));
+    
+    /* Create a bio for the write operation */
+    bio = bio_alloc(bdev, 1, REQ_OP_WRITE, GFP_KERNEL);
+    bio->bi_iter.bi_sector = pos >> 9; /* Convert to sectors */
+    
+    bvec.bv_page = page;
+    bvec.bv_len = min_t(size_t, len, PAGE_SIZE);
+    bvec.bv_offset = 0;
+    if (!bio_add_page(bio, page, bvec.bv_len, 0)) {
+        pr_err("uringblk: failed to add page to bio\n");
+        kunmap(page);
+        __free_page(page);
+        bio_put(bio);
+        return -EIO;
     }
 
-    return 0;
+    mutex_lock(&backend->io_mutex);
+    ret = submit_bio_wait(bio);
+    mutex_unlock(&backend->io_mutex);
+
+    if (ret != 0) {
+        pr_err("uringblk: write failed at pos %lld, len %zu: %d\n", pos, len, ret);
+    }
+
+    kunmap(page);
+    __free_page(page);
+    bio_put(bio);
+
+    return ret;
 }
 
 static int device_backend_flush(struct uringblk_backend *backend)
 {
-    struct file *filp = backend->private_data;
+    struct bdev_handle *bdev_handle = backend->private_data;
+    struct block_device *bdev;
+    struct bio *bio;
     int ret;
 
-    if (!filp)
+    if (!bdev_handle)
+        return -EINVAL;
+        
+    bdev = bdev_handle->bdev;
+    if (!bdev)
         return -EINVAL;
 
+    /* Create a bio for flush operation */
+    bio = bio_alloc(bdev, 0, REQ_OP_FLUSH, GFP_KERNEL);
+
     mutex_lock(&backend->io_mutex);
-    ret = vfs_fsync(filp, 0);
+    ret = submit_bio_wait(bio);
     mutex_unlock(&backend->io_mutex);
 
     if (ret) {
         pr_err("uringblk: flush failed: %d\n", ret);
     }
 
+    bio_put(bio);
     return ret;
 }
 
 static int device_backend_discard(struct uringblk_backend *backend, loff_t pos, size_t len)
 {
-    struct file *filp = backend->private_data;
+    struct bdev_handle *bdev_handle = backend->private_data;
     struct block_device *bdev;
     int ret;
 
-    if (!filp || pos + len > backend->capacity)
+    if (!bdev_handle || pos + len > backend->capacity)
         return -EINVAL;
-
-    bdev = I_BDEV(file_inode(filp));
+        
+    bdev = bdev_handle->bdev;
+    if (!bdev)
+        return -EINVAL;
     
     mutex_lock(&backend->io_mutex);
     ret = blkdev_issue_discard(bdev, pos / 512, len / 512, GFP_KERNEL);
@@ -891,30 +976,43 @@ int uringblk_init_device(struct uringblk_device *dev, int minor)
     }
     snprintf(dev->firmware, sizeof(dev->firmware), "v%s", URINGBLK_DRIVER_VERSION);
 
+    pr_info("uringblk: DEBUG - Starting backend initialization for device %d\n", minor);
+    pr_info("uringblk: DEBUG - Backend type: %d, device: '%s'\n", dev->config.backend_type, dev->config.backend_device);
+
     /* Validate backend configuration */
+    pr_info("uringblk: DEBUG - Validating backend config\n");
     ret = validate_backend_config(dev->config.backend_type, dev->config.backend_device);
-    if (ret)
+    if (ret) {
+        pr_err("uringblk: DEBUG - Backend config validation failed: %d\n", ret);
         return ret;
+    }
+    pr_info("uringblk: DEBUG - Backend config validation passed\n");
 
     /* Initialize storage backend */
+    pr_info("uringblk: DEBUG - Initializing storage backend\n");
     switch (dev->config.backend_type) {
     case URINGBLK_BACKEND_VIRTUAL:
+        pr_info("uringblk: DEBUG - Initializing virtual backend with capacity %zu MB\n", 
+                (size_t)uringblk_capacity_mb);
         ret = virtual_backend_init(&dev->backend, NULL, (size_t)uringblk_capacity_mb * 1024 * 1024);
         break;
     case URINGBLK_BACKEND_DEVICE:
         /* For device backend, use auto-detected size or fallback to capacity_mb */
+        pr_info("uringblk: DEBUG - Initializing device backend with path '%s', auto_detect=%d, capacity=%zu MB\n",
+                dev->config.backend_device, uringblk_auto_detect_size, (size_t)uringblk_capacity_mb);
         ret = device_backend_init(&dev->backend, dev->config.backend_device, 
                                 uringblk_auto_detect_size ? 0 : (size_t)uringblk_capacity_mb * 1024 * 1024);
         break;
     default:
-        pr_err("uringblk: invalid backend type: %d\n", dev->config.backend_type);
+        pr_err("uringblk: DEBUG - Invalid backend type: %d\n", dev->config.backend_type);
         return -EINVAL;
     }
 
     if (ret) {
-        pr_err("uringblk: failed to initialize backend: %d\n", ret);
+        pr_err("uringblk: DEBUG - Backend initialization failed: %d\n", ret);
         return ret;
     }
+    pr_info("uringblk: DEBUG - Backend initialization succeeded\n");
 
     /* Initialize tag set */
     memset(&dev->tag_set, 0, sizeof(dev->tag_set));
@@ -1013,6 +1111,18 @@ static int __init uringblk_init(void)
 
     pr_info("uringblk: Loading io_uring-first block driver v%s\n", 
             URINGBLK_DRIVER_VERSION);
+
+    /* Early validation of backend configuration */
+    pr_info("uringblk: DEBUG - Early validation of backend configuration\n");
+    pr_info("uringblk: DEBUG - backend_type=%d, backend_device='%s'\n", 
+            uringblk_backend_type, uringblk_backend_device);
+    
+    ret = validate_backend_config(uringblk_backend_type, uringblk_backend_device);
+    if (ret) {
+        pr_err("uringblk: DEBUG - Early backend validation failed: %d\n", ret);
+        return ret;
+    }
+    pr_info("uringblk: DEBUG - Early backend validation passed\n");
 
     /* Register block device major number */
     uringblk_major = register_blkdev(0, URINGBLK_DEVICE_NAME);
