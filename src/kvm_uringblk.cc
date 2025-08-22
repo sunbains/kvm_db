@@ -4,8 +4,14 @@
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <liburing.h>
 
 #include <filesystem>
+
+/* Define if not available */
+#ifndef IORING_OP_URING_CMD
+#define IORING_OP_URING_CMD 26
+#endif
 #include <fstream>
 #include <cstring>
 #include <format>
@@ -144,35 +150,70 @@ std::expected<bool, std::error_code> UringBlkDevice::supports_feature(uint64_t f
 std::expected<void, std::error_code> UringBlkDevice::send_uring_cmd(
     uint16_t opcode, void* payload, uint32_t payload_len, void* response, uint32_t response_len) const {
     
-    // Create URING_CMD header
-    uringblk_ucmd_hdr hdr{};
-    hdr.abi_major = URINGBLK_ABI_MAJOR;
-    hdr.abi_minor = URINGBLK_ABI_MINOR;
-    hdr.opcode = opcode;
-    hdr.flags = 0;
-    hdr.payload_len = payload_len;
+    struct io_uring ring;
+    struct io_uring_cqe *cqe;
+    struct io_uring_sqe *sqe;
+    int ret;
     
-    // For now, use a simple ioctl-based approach
-    // In a full implementation, this would use io_uring URING_CMD
+    // Initialize io_uring
+    ret = io_uring_queue_init(1, &ring, 0);
+    if (ret < 0) {
+        return std::unexpected(std::error_code{-ret, std::system_category()});
+    }
+    
+    // Create URING_CMD buffer
     struct {
         uringblk_ucmd_hdr header;
         uint8_t data[4096];  // Buffer for payload and response
     } cmd_buffer;
     
-    cmd_buffer.header = hdr;
+    // Prepare header
+    cmd_buffer.header.abi_major = URINGBLK_ABI_MAJOR;
+    cmd_buffer.header.abi_minor = URINGBLK_ABI_MINOR;
+    cmd_buffer.header.opcode = opcode;
+    cmd_buffer.header.flags = 0;
+    cmd_buffer.header.payload_len = payload_len;
     
     // Copy payload if provided
     if (payload && payload_len > 0) {
         if (payload_len > sizeof(cmd_buffer.data)) {
+            io_uring_queue_exit(&ring);
             return std::unexpected(std::error_code{E2BIG, std::system_category()});
         }
         std::memcpy(cmd_buffer.data, payload, payload_len);
     }
     
-    // Send ioctl (this would be replaced with actual URING_CMD in full implementation)
-    int result = ioctl(m_device_fd, URINGBLK_URING_CMD_IO, &cmd_buffer);
-    if (result < 0) {
-        return std::unexpected(std::error_code{errno, std::system_category()});
+    // Get SQE and prepare URING_CMD
+    sqe = io_uring_get_sqe(&ring);
+    if (!sqe) {
+        io_uring_queue_exit(&ring);
+        return std::unexpected(std::error_code{ENOMEM, std::system_category()});
+    }
+    
+    /* Manually prepare URING_CMD since io_uring_prep_cmd isn't available */
+    io_uring_prep_rw(IORING_OP_URING_CMD, sqe, m_device_fd, &cmd_buffer, sizeof(cmd_buffer), 0);
+    
+    // Submit the command
+    ret = io_uring_submit(&ring);
+    if (ret < 0) {
+        io_uring_queue_exit(&ring);
+        return std::unexpected(std::error_code{-ret, std::system_category()});
+    }
+    
+    // Wait for completion
+    ret = io_uring_wait_cqe(&ring, &cqe);
+    if (ret < 0) {
+        io_uring_queue_exit(&ring);
+        return std::unexpected(std::error_code{-ret, std::system_category()});
+    }
+    
+    // Check result
+    int cmd_result = cqe->res;
+    io_uring_cqe_seen(&ring, cqe);
+    io_uring_queue_exit(&ring);
+    
+    if (cmd_result < 0) {
+        return std::unexpected(std::error_code{-cmd_result, std::system_category()});
     }
     
     // Copy response if requested
@@ -180,7 +221,170 @@ std::expected<void, std::error_code> UringBlkDevice::send_uring_cmd(
         if (response_len > sizeof(cmd_buffer.data)) {
             return std::unexpected(std::error_code{E2BIG, std::system_category()});
         }
-        std::memcpy(response, cmd_buffer.data, response_len);
+        std::memcpy(response, cmd_buffer.data, std::min(response_len, (uint32_t)cmd_result));
+    }
+    
+    return {};
+}
+
+std::expected<size_t, std::error_code> UringBlkDevice::read_async(uint64_t offset, void* buffer, size_t length) const {
+    if (m_device_fd < 0) {
+        return std::unexpected(std::error_code{EBADF, std::system_category()});
+    }
+
+    struct io_uring ring;
+    struct io_uring_cqe *cqe;
+    struct io_uring_sqe *sqe;
+    int ret;
+    
+    // Initialize io_uring with polling support
+    ret = io_uring_queue_init(1, &ring, IORING_SETUP_IOPOLL);
+    if (ret < 0) {
+        // Fallback to regular ring if polling not supported
+        ret = io_uring_queue_init(1, &ring, 0);
+        if (ret < 0) {
+            return std::unexpected(std::error_code{-ret, std::system_category()});
+        }
+    }
+    
+    // Get SQE and prepare read operation
+    sqe = io_uring_get_sqe(&ring);
+    if (!sqe) {
+        io_uring_queue_exit(&ring);
+        return std::unexpected(std::error_code{ENOMEM, std::system_category()});
+    }
+    
+    io_uring_prep_read(sqe, m_device_fd, buffer, static_cast<unsigned int>(length), offset);
+    sqe->flags |= IOSQE_ASYNC;  // Force async execution
+    
+    // Submit the operation
+    ret = io_uring_submit(&ring);
+    if (ret < 0) {
+        io_uring_queue_exit(&ring);
+        return std::unexpected(std::error_code{-ret, std::system_category()});
+    }
+    
+    // Wait for completion
+    ret = io_uring_wait_cqe(&ring, &cqe);
+    if (ret < 0) {
+        io_uring_queue_exit(&ring);
+        return std::unexpected(std::error_code{-ret, std::system_category()});
+    }
+    
+    // Get result
+    int bytes_read = cqe->res;
+    io_uring_cqe_seen(&ring, cqe);
+    io_uring_queue_exit(&ring);
+    
+    if (bytes_read < 0) {
+        return std::unexpected(std::error_code{-bytes_read, std::system_category()});
+    }
+    
+    return static_cast<size_t>(bytes_read);
+}
+
+std::expected<size_t, std::error_code> UringBlkDevice::write_async(uint64_t offset, const void* buffer, size_t length) const {
+    if (m_device_fd < 0) {
+        return std::unexpected(std::error_code{EBADF, std::system_category()});
+    }
+
+    struct io_uring ring;
+    struct io_uring_cqe *cqe;
+    struct io_uring_sqe *sqe;
+    int ret;
+    
+    // Initialize io_uring with polling support
+    ret = io_uring_queue_init(1, &ring, IORING_SETUP_IOPOLL);
+    if (ret < 0) {
+        // Fallback to regular ring if polling not supported
+        ret = io_uring_queue_init(1, &ring, 0);
+        if (ret < 0) {
+            return std::unexpected(std::error_code{-ret, std::system_category()});
+        }
+    }
+    
+    // Get SQE and prepare write operation
+    sqe = io_uring_get_sqe(&ring);
+    if (!sqe) {
+        io_uring_queue_exit(&ring);
+        return std::unexpected(std::error_code{ENOMEM, std::system_category()});
+    }
+    
+    io_uring_prep_write(sqe, m_device_fd, buffer, static_cast<unsigned int>(length), offset);
+    sqe->flags |= IOSQE_ASYNC;  // Force async execution
+    
+    // Submit the operation
+    ret = io_uring_submit(&ring);
+    if (ret < 0) {
+        io_uring_queue_exit(&ring);
+        return std::unexpected(std::error_code{-ret, std::system_category()});
+    }
+    
+    // Wait for completion
+    ret = io_uring_wait_cqe(&ring, &cqe);
+    if (ret < 0) {
+        io_uring_queue_exit(&ring);
+        return std::unexpected(std::error_code{-ret, std::system_category()});
+    }
+    
+    // Get result
+    int bytes_written = cqe->res;
+    io_uring_cqe_seen(&ring, cqe);
+    io_uring_queue_exit(&ring);
+    
+    if (bytes_written < 0) {
+        return std::unexpected(std::error_code{-bytes_written, std::system_category()});
+    }
+    
+    return static_cast<size_t>(bytes_written);
+}
+
+std::expected<void, std::error_code> UringBlkDevice::flush_async() const {
+    if (m_device_fd < 0) {
+        return std::unexpected(std::error_code{EBADF, std::system_category()});
+    }
+
+    struct io_uring ring;
+    struct io_uring_cqe *cqe;
+    struct io_uring_sqe *sqe;
+    int ret;
+    
+    // Initialize io_uring
+    ret = io_uring_queue_init(1, &ring, 0);
+    if (ret < 0) {
+        return std::unexpected(std::error_code{-ret, std::system_category()});
+    }
+    
+    // Get SQE and prepare fsync operation
+    sqe = io_uring_get_sqe(&ring);
+    if (!sqe) {
+        io_uring_queue_exit(&ring);
+        return std::unexpected(std::error_code{ENOMEM, std::system_category()});
+    }
+    
+    io_uring_prep_fsync(sqe, m_device_fd, IORING_FSYNC_DATASYNC);
+    
+    // Submit the operation
+    ret = io_uring_submit(&ring);
+    if (ret < 0) {
+        io_uring_queue_exit(&ring);
+        return std::unexpected(std::error_code{-ret, std::system_category()});
+    }
+    
+    // Wait for completion
+    ret = io_uring_wait_cqe(&ring, &cqe);
+    if (ret < 0) {
+        io_uring_queue_exit(&ring);
+        return std::unexpected(std::error_code{-ret, std::system_category()});
+    }
+    
+    // Get result
+    int flush_result = cqe->res;
+    io_uring_cqe_seen(&ring, cqe);
+    io_uring_queue_exit(&ring);
+    
+    if (flush_result < 0) {
+        return std::unexpected(std::error_code{-flush_result, std::system_category()});
     }
     
     return {};

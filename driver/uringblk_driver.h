@@ -31,7 +31,12 @@
 /* URING_CMD ABI */
 #define URINGBLK_URING_CMD_IO   'U'
 
-/* URING_CMD opcodes */
+/* Standard block URING_CMD opcodes (from kernel) */
+#ifndef BLOCK_URING_CMD_DISCARD
+#define BLOCK_URING_CMD_DISCARD		1
+#endif
+
+/* URING_CMD opcodes for our custom commands */
 enum uringblk_ucmd {
     URINGBLK_UCMD_IDENTIFY      = 0x01,
     URINGBLK_UCMD_GET_LIMITS    = 0x02,
@@ -174,6 +179,10 @@ struct uringblk_device {
     struct uringblk_stats stats;
     spinlock_t stats_lock;
     
+    /* Latency tracking */
+    u32 latency_buckets[32]; /* Simple histogram for latency tracking */
+    spinlock_t latency_lock;
+    
     /* Storage backend */
     struct uringblk_backend backend;
     
@@ -187,6 +196,9 @@ struct uringblk_device {
     struct mutex admin_mutex;
     int major;
     int minor;
+    
+    /* Admin interface */
+    struct device *admin_device;   /* Admin char device node */
 };
 
 /* Per-queue context */
@@ -201,6 +213,7 @@ struct uringblk_queue {
 int uringblk_init_device(struct uringblk_device *dev, int minor);
 void uringblk_cleanup_device(struct uringblk_device *dev);
 int uringblk_handle_uring_cmd(struct io_uring_cmd *cmd, unsigned int issue_flags);
+blk_status_t uringblk_handle_uring_cmd_request(struct request *rq, struct uringblk_device *dev);
 int uringblk_poll(struct blk_mq_hw_ctx *hctx, struct io_uring_cmd *ioucmd);
 
 /* Block device operations */

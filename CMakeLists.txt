@@ -150,7 +150,7 @@ if(URINGBLK_DRIVER_AVAILABLE)
 endif()
 
 # Linux-specific libraries
-target_link_libraries(kvm_db PRIVATE pthread)
+target_link_libraries(kvm_db PRIVATE pthread uring)
 
 # Check if we need to link filesystem library separately (older GCC)
 include(CheckCXXSourceCompiles)

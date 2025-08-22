@@ -154,27 +154,32 @@ static void cleanup_test_buffers(void)
 }
 
 /* URING_CMD test functions */
-static int test_uring_cmd_identify(int fd, struct io_uring *ring)
+/* New URING_CMD structure that matches kernel implementation */
+struct uringblk_uring_cmd {
+    __u16 opcode;        /* URINGBLK_UCMD_* */
+    __u16 flags;         /* Reserved */
+    __u32 len;           /* Length of response buffer */
+    __u64 addr;          /* User response buffer address */
+} __packed;
+
+static int test_uring_cmd_identify(int admin_fd, struct io_uring *ring)
 {
     struct io_uring_cqe *cqe;
     struct io_uring_sqe *sqe;
-    struct uringblk_ucmd_hdr hdr;
     struct uringblk_identify id;
-    char cmd_buf[sizeof(hdr) + sizeof(id)];
+    struct uringblk_uring_cmd ucmd;
     int ret;
 
     printf("Testing URING_CMD IDENTIFY...\n");
 
-    /* Prepare command header */
-    memset(&hdr, 0, sizeof(hdr));
-    hdr.abi_major = URINGBLK_ABI_MAJOR;
-    hdr.abi_minor = URINGBLK_ABI_MINOR;
-    hdr.opcode = URINGBLK_UCMD_IDENTIFY;
-    hdr.payload_len = sizeof(id);
+    /* Clear response buffer */
+    memset(&id, 0, sizeof(id));
 
-    /* Copy header and prepare buffer */
-    memcpy(cmd_buf, &hdr, sizeof(hdr));
-    memset(cmd_buf + sizeof(hdr), 0, sizeof(id));
+    /* Prepare command structure */
+    ucmd.opcode = URINGBLK_UCMD_IDENTIFY;
+    ucmd.flags = 0;
+    ucmd.len = sizeof(id);
+    ucmd.addr = (uint64_t)&id;
 
     /* Submit URING_CMD */
     sqe = io_uring_get_sqe(ring);
@@ -183,7 +188,19 @@ static int test_uring_cmd_identify(int fd, struct io_uring *ring)
         return -1;
     }
 
-    io_uring_prep_cmd(sqe, fd, 0, 0, 0, cmd_buf, sizeof(cmd_buf));
+    /* Prepare URING_CMD manually */
+    memset(sqe, 0, sizeof(*sqe));
+    sqe->opcode = IORING_OP_URING_CMD;
+    sqe->fd = admin_fd;
+    sqe->flags = 0;
+    sqe->len = 0;              /* Length unused for URING_CMD */
+    sqe->off = 0;              /* Offset unused for URING_CMD */  
+    sqe->addr = 0;             /* Address unused - data in cmd field */
+    /* Note: cmd_op is not used, command is in sqe->cmd */
+    memcpy(sqe->cmd, &ucmd, sizeof(ucmd));
+    
+    printf("DEBUG: IORING_OP_URING_CMD=%d, setting opcode=%u, fd=%d\n", 
+           IORING_OP_URING_CMD, sqe->opcode, admin_fd);
     
     ret = io_uring_submit(ring);
     if (ret < 0) {
@@ -204,9 +221,6 @@ static int test_uring_cmd_identify(int fd, struct io_uring *ring)
         return cqe->res;
     }
 
-    /* Parse response */
-    memcpy(&id, cmd_buf + sizeof(hdr), sizeof(id));
-    
     printf("Device Identity:\n");
     printf("  Model: %.40s\n", id.model);
     printf("  Firmware: %.16s\n", id.firmware);
@@ -222,27 +236,24 @@ static int test_uring_cmd_identify(int fd, struct io_uring *ring)
     return 0;
 }
 
-static int test_uring_cmd_get_stats(int fd, struct io_uring *ring)
+static int test_uring_cmd_get_stats(int admin_fd, struct io_uring *ring)
 {
     struct io_uring_cqe *cqe;
     struct io_uring_sqe *sqe;
-    struct uringblk_ucmd_hdr hdr;
     struct uringblk_stats stats;
-    char cmd_buf[sizeof(hdr) + sizeof(stats)];
+    struct uringblk_uring_cmd ucmd;
     int ret;
 
     printf("Testing URING_CMD GET_STATS...\n");
 
-    /* Prepare command header */
-    memset(&hdr, 0, sizeof(hdr));
-    hdr.abi_major = URINGBLK_ABI_MAJOR;
-    hdr.abi_minor = URINGBLK_ABI_MINOR;
-    hdr.opcode = URINGBLK_UCMD_GET_STATS;
-    hdr.payload_len = sizeof(stats);
+    /* Clear response buffer */
+    memset(&stats, 0, sizeof(stats));
 
-    /* Copy header and prepare buffer */
-    memcpy(cmd_buf, &hdr, sizeof(hdr));
-    memset(cmd_buf + sizeof(hdr), 0, sizeof(stats));
+    /* Prepare command structure */
+    ucmd.opcode = URINGBLK_UCMD_GET_STATS;
+    ucmd.flags = 0;
+    ucmd.len = sizeof(stats);
+    ucmd.addr = (uint64_t)&stats;
 
     /* Submit URING_CMD */
     sqe = io_uring_get_sqe(ring);
@@ -251,7 +262,19 @@ static int test_uring_cmd_get_stats(int fd, struct io_uring *ring)
         return -1;
     }
 
-    io_uring_prep_cmd(sqe, fd, 0, 0, 0, cmd_buf, sizeof(cmd_buf));
+    /* Prepare URING_CMD manually */
+    memset(sqe, 0, sizeof(*sqe));
+    sqe->opcode = IORING_OP_URING_CMD;
+    sqe->fd = admin_fd;
+    sqe->flags = 0;
+    sqe->len = 0;              /* Length unused for URING_CMD */
+    sqe->off = 0;              /* Offset unused for URING_CMD */  
+    sqe->addr = 0;             /* Address unused - data in cmd field */
+    /* Note: cmd_op is not used, command is in sqe->cmd */
+    memcpy(sqe->cmd, &ucmd, sizeof(ucmd));
+    
+    printf("DEBUG: IORING_OP_URING_CMD=%d, setting opcode=%u, fd=%d\n", 
+           IORING_OP_URING_CMD, sqe->opcode, admin_fd);
     
     ret = io_uring_submit(ring);
     if (ret < 0) {
@@ -272,9 +295,6 @@ static int test_uring_cmd_get_stats(int fd, struct io_uring *ring)
         return cqe->res;
     }
 
-    /* Parse response */
-    memcpy(&stats, cmd_buf + sizeof(hdr), sizeof(stats));
-    
     printf("Device Statistics:\n");
     printf("  Read ops: %" PRIu64 "\n", stats.read_ops);
     printf("  Write ops: %" PRIu64 "\n", stats.write_ops);
@@ -485,6 +505,7 @@ int main(int argc, char *argv[])
 {
     struct io_uring ring;
     int fd = -1;
+    int admin_fd = -1;
     int ret = 0;
     int flags = 0;
 
@@ -556,6 +577,17 @@ int main(int argc, char *argv[])
                 config.device);
         exit(1);
     }
+    
+    /* Open admin device for URING_CMD operations */
+    if (config.test_admin) {
+        /* Use same block device fd for admin commands per spec requirements */
+        admin_fd = dup(fd);
+        if (admin_fd < 0) {
+            perror("dup block device fd");
+            exit(1);
+        }
+        printf("Using block device for URING_CMD operations: %s\n", config.device);
+    }
 
     /* Setup test buffers */
     if (setup_test_buffers() < 0) {
@@ -601,14 +633,14 @@ int main(int argc, char *argv[])
 
     if (config.test_admin) {
         printf("=== Admin Command Tests ===\n");
-        ret = test_uring_cmd_identify(fd, &ring);
+        ret = test_uring_cmd_identify(admin_fd, &ring);
         if (ret) {
             fprintf(stderr, "IDENTIFY test failed\n");
             goto cleanup_ring;
         }
         printf("\n");
 
-        ret = test_uring_cmd_get_stats(fd, &ring);
+        ret = test_uring_cmd_get_stats(admin_fd, &ring);
         if (ret) {
             fprintf(stderr, "GET_STATS test failed\n");
             goto cleanup_ring;
@@ -630,6 +662,7 @@ cleanup_ring:
     io_uring_queue_exit(&ring);
 cleanup:
     cleanup_test_buffers();
+    if (admin_fd >= 0) close(admin_fd);
     if (fd >= 0) close(fd);
     return ret;
 }

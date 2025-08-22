@@ -63,6 +63,11 @@ public:
     [[nodiscard]] std::expected<uint32_t, std::error_code> get_logical_block_size() const;
     [[nodiscard]] std::expected<bool, std::error_code> supports_feature(uint64_t feature_flag) const;
 
+    // High-performance I/O operations using io_uring
+    [[nodiscard]] std::expected<size_t, std::error_code> read_async(uint64_t offset, void* buffer, size_t length) const;
+    [[nodiscard]] std::expected<size_t, std::error_code> write_async(uint64_t offset, const void* buffer, size_t length) const;
+    [[nodiscard]] std::expected<void, std::error_code> flush_async() const;
+    
     // Device path accessor
     [[nodiscard]] const std::string& device_path() const noexcept { return m_device_path; }
     [[nodiscard]] int device_handle() const noexcept { return m_device_fd; }

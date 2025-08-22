@@ -94,6 +94,45 @@ int main() {
     if (auto test_result = uringblk_manager.test_all_devices(); !test_result) {
       println("uringblk device testing failed: {}", test_result.error().message());
     }
+    
+    // Test high-performance I/O operations
+    println("\n--- Testing High-Performance I/O ---");
+    auto devices = uringblk_manager.enumerate_devices();
+    if (devices && !devices->empty()) {
+      UringBlkDevice device;
+      if (auto open_result = device.open_device(devices->front()); open_result) {
+        println("Testing async I/O operations on {}", devices->front());
+        
+        // Test async read/write operations
+        std::vector<uint8_t> test_data(4096, 0x42);  // 4KB test buffer
+        std::vector<uint8_t> read_buffer(4096, 0);
+        
+        // Test write operation
+        if (auto write_result = device.write_async(0, test_data.data(), test_data.size()); write_result) {
+          println("Async write completed: {} bytes written", *write_result);
+          
+          // Test read operation
+          if (auto read_result = device.read_async(0, read_buffer.data(), read_buffer.size()); read_result) {
+            println("Async read completed: {} bytes read", *read_result);
+            
+            // Verify data integrity
+            bool data_matches = std::equal(test_data.begin(), test_data.end(), read_buffer.begin());
+            println("Data integrity check: {}", data_matches ? "PASSED" : "FAILED");
+          } else {
+            println("Async read failed: {}", read_result.error().message());
+          }
+        } else {
+          println("Async write failed: {}", write_result.error().message());
+        }
+        
+        // Test flush operation
+        if (auto flush_result = device.flush_async(); flush_result) {
+          println("Async flush completed successfully");
+        } else {
+          println("Async flush failed: {}", flush_result.error().message());
+        }
+      }
+    }
   } else {
     println("uringblk driver is not loaded");
     println("To load the driver, run: sudo make uringblk_driver_load");
