@@ -1,0 +1,30 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "/usr/include",
+                "/usr/local/include",
+                "/lib/modules/${env:UNAME_R}/build/include",
+                "/lib/modules/${env:UNAME_R}/build/arch/x86/include",
+                "/lib/modules/${env:UNAME_R}/build/arch/x86/include/generated",
+                "/usr/src/linux-headers-${env:UNAME_R}/include",
+                "/usr/src/linux-headers-${env:UNAME_R}/arch/x86/include",
+                "/usr/src/linux-headers-${env:UNAME_R}/arch/x86/include/generated"
+            ],
+            "defines": [
+                "__KERNEL__",
+                "MODULE",
+                "CONFIG_X86_64",
+                "CONFIG_64BIT"
+            ],
+            "compilerPath": "/usr/bin/gcc",
+            "cStandard": "c17",
+            "cppStandard": "c++23",
+            "intelliSenseMode": "linux-gcc-x64",
+            "compileCommands": "${workspaceFolder}/build/compile_commands.json"
+        }
+    ],
+    "version": 4
+}
